@@ -153,9 +153,6 @@
 
 #define RDL_CLK         0100000                         /* 10 Khz clock */
 
-extern uint16 *M;                                       /* memory */
-extern int32 int_req[IPL_HLVL];
-
 uint8 *tmxb = NULL;                                     /* xfer buffer */
 int32 tm_sta = 0;                                       /* status register */
 int32 tm_cmd = 0;                                       /* command register */
@@ -723,14 +720,14 @@ size_t i;
 sim_tape_rewind (&tm_unit[unitno]);
 if (sim_switches & SWMASK ('O')) {
     for (i = 0; i < BOOT1_LEN; i++)
-        M[(BOOT_START >> 1) + i] = boot1_rom[i];
+        WrMemW (BOOT_START + (2 * i), boot1_rom[i]);
     }
 else {
     for (i = 0; i < BOOT2_LEN; i++)
-        M[(BOOT_START >> 1) + i] = boot2_rom[i];
+        WrMemW (BOOT_START + (2 * i), boot2_rom[i]);
     }
-M[BOOT_UNIT >> 1] = (uint16)unitno;
-M[BOOT_CSR >> 1] = (tm_dib.ba & DMASK) + 06;
+WrMemW (BOOT_UNIT, (uint16)unitno);
+WrMemW (BOOT_CSR, (tm_dib.ba & DMASK) + 06);
 cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 } 

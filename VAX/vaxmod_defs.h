@@ -1,6 +1,6 @@
 /* vaxmod_defs.h: VAX model-specific definitions file
 
-   Copyright (c) 1998-2013, Robert M Supnik
+   Copyright (c) 1998-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   18-May-17    RMS     Added model-specific AST validation test
    20-Dec-13    RMS     Added prototypes for unaligned IO and register handling
    11-Dec-11    RMS     Moved all Qbus devices to BR4; deleted RP definitions
    25-Nov-11    RMS     Added VEC_QBUS definition
@@ -196,7 +197,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
 
 /* CMCTL registers */
 
-/* #define CMCTLSIZE    (18 << 2)                     *//* 18 registers */
+// #define CMCTLSIZE    (18 << 2)                       /* 18 registers */
 #define CMCTLSIZE       (19 << 2)                       /* KA655X extra reg */
 #define CMCTLBASE       (REGBASE + 0x100)               /* CMCTL addr base */
 
@@ -232,7 +233,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
 #define ADDR_IS_QVM(x)  ((((uint32) (x)) >= QVMBASE) && \
                         (((uint32) (x)) < (QVMBASE + QVMSIZE)))
 
-/* Machine specific reserved operand tests (all NOPs) */
+/* Machine specific reserved operand tests (mostly NOPs) */
 
 #define ML_PA_TEST(r)
 #define ML_LR_TEST(r)
@@ -241,6 +242,9 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
 #define LP_AST_TEST(r)
 #define LP_MBZ84_TEST(r)
 #define LP_MBZ92_TEST(r)
+
+#define MT_AST_TEST(r)  if ((r) > AST_MAX) RSVD_OPND_FAULT
+
 
 /* Qbus I/O modes */
 
@@ -267,8 +271,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
 
 /* I/O system definitions */
 
-#define DZ_MUXES        4                               /* max # of DZV muxes */
-#define DZ_LINES        4                               /* lines per DZV mux */
+#define DZ_MUXES        4                               /* default # of DZV muxes */
 #define VH_MUXES        4                               /* max # of DHQ muxes */
 #define MT_MAXFR        (1 << 16)                       /* magtape max rec */
 
@@ -304,6 +307,8 @@ typedef struct {
                                                         /* where multiple instances are */
                                                         /* simulated through a single */
                                                         /* DEVICE structure (e.g., DZ, VH, DL, DC). */
+                                                        /* Populated by auto-configure */
+    DEVICE              *dptr;                          /* back pointer to related device */
                                                         /* Populated by auto-configure */
     } DIB;
 
@@ -431,13 +436,6 @@ typedef struct {
 #define SET_INT(dv)     int_req[IPL_##dv] = int_req[IPL_##dv] | (INT_##dv)
 #define CLR_INT(dv)     int_req[IPL_##dv] = int_req[IPL_##dv] & ~(INT_##dv)
 #define IORETURN(f,v)   ((f)? (v): SCPE_OK)             /* cond error return */
-extern int32 int_req[IPL_HLVL];                         /* intr, IPL 14-17 */
-
-/* Logging */
-
-#define LOG_CPU_I       0x1                             /* intexc */
-#define LOG_CPU_R       0x2                             /* REI */
-#define LOG_CPU_P       0x4                             /* context */
 
 /* Function prototypes for I/O */
 

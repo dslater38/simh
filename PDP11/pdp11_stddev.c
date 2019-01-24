@@ -63,6 +63,9 @@
 
 #include "pdp11_defs.h"
 #include "sim_tmxr.h"
+#if defined(USE_DISPLAY)
+#include "display/display.h"
+#endif
 
 #define TTICSR_IMP      (CSR_DONE + CSR_IE)             /* terminal input */
 #define TTICSR_RW       (CSR_IE)
@@ -71,9 +74,6 @@
 #define CLKCSR_IMP      (CSR_DONE + CSR_IE)             /* real-time clock */
 #define CLKCSR_RW       (CSR_IE)
 #define CLK_DELAY       16667
-
-extern int32 int_req[IPL_HLVL];
-extern uint32 cpu_type;
 
 int32 tti_csr = 0;                                      /* control/status */
 uint32 tti_buftime;                                     /* time input character arrived */
@@ -141,12 +141,26 @@ MTAB tti_mod[] = {
     { 0 }
     };
 
+#define DBG_RREG     1   /* register read access */
+#define DBG_WREG     2   /* register write access */
+#define DBG_INT      4   /* interrupt activity */
+#define DBG_INTA     8   /* interrupt activity */
+#define DBG_DATA    16   /* incoming data */
+
+DEBTAB tti_debug[] = {
+  {"RREG",  DBG_RREG,   "register read access"},
+  {"WREG",  DBG_WREG,   "register write access"},
+  {"DAT",   DBG_DATA,   "incoming data"},
+  {0}
+};
+
+
 DEVICE tti_dev = {
     "TTI", &tti_unit, tti_reg, tti_mod,
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &tti_reset,
     NULL, NULL, NULL,
-    &tti_dib, DEV_UBUS | DEV_QBUS
+    &tti_dib, DEV_DEBUG | DEV_UBUS | DEV_QBUS, 0, tti_debug
     };
 
 /* TTO data structures
@@ -211,11 +225,18 @@ DIB clk_dib = {
 
 UNIT clk_unit = { UDATA (&clk_svc, UNIT_IDLE, 0), CLK_DELAY };
 
+BITFIELD clk_bits[] = {
+    BITNCF(6),                              /* MBZ */
+    BIT(IE),                                /* Interrupt Enable */
+    BIT(DONE),                              /* Done */
+    ENDBITS
+};
+
 REG clk_reg[] = {
-    { ORDATA (CSR, clk_csr, 16) },
-    { FLDATA (INT, IREQ (CLK), INT_V_CLK) },
-    { FLDATA (DONE, clk_csr, CSR_V_DONE) },
-    { FLDATA (IE, clk_csr, CSR_V_IE) },
+    { ORDATADF (CSR, clk_csr, 16, "Control Status Register", clk_bits) },
+    { FLDATAD (INT, IREQ (CLK), INT_V_CLK, "Processor Interrupt Pending") },
+    { FLDATAD (DONE, clk_csr, CSR_V_DONE, "Tick Interval Complete") },
+    { FLDATAD (IE, clk_csr, CSR_V_IE, "Interrupt Enabled") },
     { DRDATA (TIME, clk_unit.wait, 24), REG_NZ + PV_LEFT },
     { DRDATA (TPS, clk_tps, 16), PV_LEFT + REG_HRO },
     { DRDATA (DEFTPS, clk_default, 16), PV_LEFT + REG_HRO },
@@ -238,12 +259,21 @@ MTAB clk_mod[] = {
     { 0 }
     };
 
+DEBTAB clk_debug[] = {
+  {"RREG",  DBG_RREG,   "register read access"},
+  {"WREG",  DBG_WREG,   "register write access"},
+  {"INT",   DBG_INT,    "interrupt activity"},
+  {"INTA",  DBG_INTA,   "interrupt acknowledgement"},
+  {0}
+};
+
 DEVICE clk_dev = {
     "CLK", &clk_unit, clk_reg, clk_mod,
     1, 0, 0, 0, 0, 0,
     NULL, NULL, &clk_reset,
     NULL, NULL, NULL,
-    &clk_dib, DEV_UBUS | DEV_QBUS
+    &clk_dib, DEV_DEBUG | DEV_UBUS | DEV_QBUS, 0,
+    clk_debug
     };
 
 /* Terminal input address routines */
@@ -254,17 +284,22 @@ switch ((PA >> 1) & 01) {                               /* decode PA<1> */
 
     case 00:                                            /* tti csr */
         *data = tti_csr & TTICSR_IMP;
-        return SCPE_OK;
+        break;
 
     case 01:                                            /* tti buf */
         tti_csr = tti_csr & ~CSR_DONE;
         CLR_INT (TTI);
         *data = tti_unit.buf & 0377;
         sim_activate_after_abs (&tti_unit, tti_unit.wait);  /* check soon for more input */
-        return SCPE_OK;
+        break;
+
+    default:
+        return SCPE_NXM;
         }                                               /* end switch PA */
 
-return SCPE_NXM;
+sim_debug (DBG_RREG, &tti_dev, "tti_rd(%s) - 0x%04X\n", ((PA >> 1) & 01) ? "BUF" : "CSR", *data);
+
+return SCPE_OK;
 }
 
 t_stat tti_wr (int32 data, int32 PA, int32 access)
@@ -279,13 +314,18 @@ switch ((PA >> 1) & 01) {                               /* decode PA<1> */
         else if ((tti_csr & (CSR_DONE + CSR_IE)) == CSR_DONE)
             SET_INT (TTI);
         tti_csr = (tti_csr & ~TTICSR_RW) | (data & TTICSR_RW);
-        return SCPE_OK;
+        break;
 
     case 01:                                            /* tti buf */
-        return SCPE_OK;
+        break;
+
+    default:
+        return SCPE_NXM;
         }                                               /* end switch PA */
 
-return SCPE_NXM;
+sim_debug (DBG_WREG, &tti_dev, "tti_wr(%s) - 0x%04X\n", ((PA >> 1) & 01) ? "BUF" : "CSR", data);
+
+return SCPE_OK;
 }
 
 /* Terminal input service */
@@ -299,11 +339,25 @@ sim_clock_coschedule (uptr, tmxr_poll);                 /* continue poll */
 if ((tti_csr & CSR_DONE) &&                             /* input still pending and < 500ms? */
     ((sim_os_msec () - tti_buftime) < 500))
      return SCPE_OK;
-if ((c = sim_poll_kbd ()) < SCPE_KFLAG)                 /* no char or error? */
+#if defined(USE_DISPLAY)
+if (display_last_char) {
+    c = display_last_char | SCPE_KFLAG;
+    display_last_char = 0;
+    }
+else {
+    c = sim_poll_kbd ();
+    if (c < SCPE_KFLAG)                     /* no char or error? */
+        return c;
+    }
+#else
+if ((c = sim_poll_kbd ()) < SCPE_KFLAG) /* no char or error? */
     return c;
-if (c & SCPE_BREAK)                                     /* break? */
+#endif
+sim_debug (DBG_DATA, &tti_dev, "tti_svc() - Received data: 0x%02X '%c'\n", c & ~SCPE_KFLAG, c & ~SCPE_KFLAG);
+if (c & SCPE_BREAK)                         /* break? */
     uptr->buf = 0;
-else uptr->buf = sim_tt_inpcvt (c, TT_GET_MODE (uptr->flags));
+else
+    uptr->buf = sim_tt_inpcvt (c, TT_GET_MODE (uptr->flags));
 tti_buftime = sim_os_msec ();
 uptr->pos = uptr->pos + 1;
 tti_csr = tti_csr | CSR_DONE;
@@ -320,7 +374,7 @@ tmxr_set_console_units (&tti_unit, &tto_unit);
 tti_unit.buf = 0;
 tti_csr = 0;
 CLR_INT (TTI);
-sim_activate (&tti_unit, KBD_WAIT (tti_unit.wait, tmr_poll));
+sim_activate (&tti_unit, tmr_poll);
 return SCPE_OK;
 }
 
@@ -419,16 +473,21 @@ return SCPE_OK;
 
 t_stat clk_rd (int32 *data, int32 PA, int32 access)
 {
+int32 orig_csr = clk_csr;
+
 if (clk_fnxm)                                           /* not there??? */
     return SCPE_NXM;
 if (CPUT (HAS_LTCM))                                    /* monitor bit? */
     *data = clk_csr & CLKCSR_IMP;
 else *data = clk_csr & (CLKCSR_IMP & ~CSR_DONE);        /* no, just IE */
+sim_debug_bits(DBG_RREG, &clk_dev, clk_bits, orig_csr, *data, 1);
 return SCPE_OK;
 }
 
 t_stat clk_wr (int32 data, int32 PA, int32 access)
 {
+int32 orig_csr = clk_csr;
+
 if (clk_fnxm)                                           /* not there??? */
     return SCPE_NXM;
 if (PA & 1)
@@ -437,8 +496,11 @@ clk_csr = (clk_csr & ~CLKCSR_RW) | (data & CLKCSR_RW);
 if (CPUT (HAS_LTCM) && ((data & CSR_DONE) == 0))        /* monitor bit? */
     clk_csr = clk_csr & ~CSR_DONE;                      /* clr if zero */
 if ((((clk_csr & CSR_IE) == 0) && !clk_fie) ||          /* unless IE+DONE */
-    ((clk_csr & CSR_DONE) == 0))                        /* clr intr */
+    ((clk_csr & CSR_DONE) == 0)) {                      /* clr intr */
     CLR_INT (CLK);
+    sim_debug (DBG_INT, &clk_dev, "CLR_INT(CLK)\n");
+    }
+sim_debug_bits(DBG_WREG, &clk_dev, clk_bits, orig_csr, clk_csr, 1);
 return SCPE_OK;
 }
 
@@ -449,8 +511,10 @@ t_stat clk_svc (UNIT *uptr)
 int32 t;
 
 clk_csr = clk_csr | CSR_DONE;                           /* set done */
-if ((clk_csr & CSR_IE) || clk_fie)
+if ((clk_csr & CSR_IE) || clk_fie) {
     SET_INT (CLK);
+    sim_debug (DBG_INT, &clk_dev, "SET_INT(CLK)\n");
+    }
 t = sim_rtcn_calb (clk_tps, TMR_CLK);                   /* calibrate clock */
 sim_activate_after (uptr, 1000000/clk_tps);             /* reactivate unit */
 tmr_poll = t;                                           /* set timer poll */
@@ -464,6 +528,7 @@ int32 clk_inta (void)
 {
 if (CPUT (CPUT_24))
     clk_csr = clk_csr & ~CSR_DONE;
+sim_debug (DBG_INTA, &clk_dev, "clk_inta() returning vector 0%o\n", clk_dib.vec);
 return clk_dib.vec;
 }
 
@@ -471,7 +536,6 @@ return clk_dib.vec;
 
 t_stat clk_reset (DEVICE *dptr)
 {
-sim_register_clock_unit (&clk_unit);                    /* declare clock unit */
 if (CPUT (HAS_LTCR))                                    /* reg there? */
     clk_fie = clk_fnxm = 0;
 else {
@@ -481,8 +545,8 @@ else {
 clk_tps = clk_default;                                  /* set default tps */
 clk_csr = CSR_DONE;                                     /* set done */
 CLR_INT (CLK);
-sim_rtcn_init (clk_unit.wait, TMR_CLK);                 /* init line clock */
-sim_activate (&clk_unit, clk_unit.wait);                /* activate unit */
+tmr_poll = sim_rtcn_init_unit (&clk_unit, clk_unit.wait, TMR_CLK);/* init line clock */
+sim_activate_after (&clk_unit, 1000000/clk_tps);        /* activate unit */
 tmr_poll = clk_unit.wait;                               /* set timer poll */
 tmxr_poll = clk_unit.wait;                              /* set mux poll */
 return SCPE_OK;

@@ -252,11 +252,6 @@ return (SCPE_OK);
         status  =       error code
 */
 
-/* Use scp.c provided fprintf function */
-#define fprintf Fprintf
-#define fputs(_s,f) Fprintf(f,"%s",_s)
-#define fputc(_c,f) Fprintf(f,"%c",_c)
-
 t_stat fprint_sym (FILE *of, t_addr addr, t_value *val,
     UNIT *uptr, int32 sw)
 {
@@ -931,11 +926,11 @@ return (-(oplen-1));
 CONST char *parse_addr(CONST char *cptr,  char *gbuf, t_addr *addr, int32 *addrtype)
 {
 int32 nybble = 0;
-char temp[32];
+char temp[CBUFSIZE];
 
 cptr = get_glyph(cptr, gbuf, ',');
 if (gbuf[0] == '(') {                                   /* XR relative */
-    strcpy(temp, gbuf+1);
+    strlcpy(temp, gbuf+1, sizeof(temp));
     sscanf(temp, "%x", addr);
     if (*cptr == ',') cptr++;
     cptr = get_glyph(cptr, gbuf, ',');

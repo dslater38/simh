@@ -96,7 +96,7 @@ t_stat vax750_show_bootdev (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 
 extern int32 iccs_rd (void);
 extern int32 nicr_rd (void);
-extern int32 icr_rd (t_bool interp);
+extern int32 icr_rd (void);
 extern int32 todr_rd (void);
 extern int32 rxcs_rd (void);
 extern int32 rxdb_rd (void);
@@ -289,7 +289,7 @@ switch (rg) {
         break;
 
     case MT_ICR:                                        /* ICR */
-        val = icr_rd (FALSE);
+        val = icr_rd ();
         break;
 
     case MT_TODR:                                       /* TODR */
@@ -609,6 +609,8 @@ t_stat vax750_boot (int32 flag, CONST char *ptr)
 {
 t_stat r;
 
+if ((ptr = get_sim_sw (ptr)) == NULL)                   /* get switches */
+    return SCPE_INVSW;
 r = vax750_boot_parse (flag, ptr);                      /* parse the boot cmd */
 if (r != SCPE_OK) {                                     /* error? */
     if (r >= SCPE_BASE) {                               /* message available? */
@@ -617,7 +619,7 @@ if (r != SCPE_OK) {                                     /* error? */
         }
     return r;
     }
-strncpy (cpu_boot_cmd, ptr, CBUFSIZE);                  /* save for reboot */
+strncpy (cpu_boot_cmd, ptr, CBUFSIZE-1);                /* save for reboot */
 return run_cmd (flag, "CPU");
 }
 
@@ -633,6 +635,8 @@ DEVICE *dptr;
 UNIT *uptr;
 t_stat r;
 
+if (!ptr || !*ptr)
+    return SCPE_2FARG;
 if (ptr && (*ptr == '/')) {                             /* handle "BOOT /R5:n DEV" format */
     ptr = get_glyph (ptr, rbuf, 0);                     /* get glyph */
     regptr = rbuf;
@@ -647,6 +651,7 @@ else {                                                  /* handle "BOOT DEV /R5:
     }
 /* parse R5 parameter value */
 r5v = 0;
+/* coverity[NULL_RETURNS] */ 
 if ((strncmp (regptr, "/R5:", 4) == 0) ||
     (strncmp (regptr, "/R5=", 4) == 0) ||
     (strncmp (regptr, "/r5:", 4) == 0) ||

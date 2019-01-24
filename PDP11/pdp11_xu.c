@@ -557,9 +557,13 @@ t_stat xu_process_loopback(CTLR* xu, ETH_PACK* pack)
   ETH_MAC   physical_address;
   t_stat    status;
   int offset   = 16 + (pack->msg[14] | (pack->msg[15] << 8));
-  int function = pack->msg[offset] | (pack->msg[offset+1] << 8);
+  int function;
 
-  sim_debug(DBG_TRC, xu->dev, "xu_process_loopback()\n");
+  if (offset > ETH_MAX_PACKET - 8)
+      return SCPE_NOFNC;
+  function = pack->msg[offset] | (pack->msg[offset+1] << 8);
+
+  sim_debug(DBG_TRC, xu->dev, "xu_process_loopback(function=%d)\n", function);
 
   if (function != 2 /*forward*/)
     return SCPE_NOFNC;
@@ -851,7 +855,13 @@ t_stat xu_reset(DEVICE* dptr)
   sim_debug(DBG_TRC, xu->dev, "xu_reset()\n");
   /* One time only initializations */
   if (!xu->var->initialized) {
+    char uname[16];
+
     xu->var->initialized = TRUE;
+    sprintf (uname, "%s-SVC", dptr->name);
+    sim_set_uname (&dptr->units[0], uname);
+    sprintf (uname, "%s-TMRSVC", dptr->name);
+    sim_set_uname (&dptr->units[1], uname);
     /* Set an initial MAC address in the DEC range */
     xu_setmac (dptr->units, 0, "08:00:2B:00:00:00/24", NULL);
     }
@@ -1012,8 +1022,8 @@ int32 xu_command(CTLR* xu)
       xu->var->rrlen = xu->var->udb[5];
       xu->var->rxnext = 0;
       xu->var->txnext = 0;
-// xu_dump_rxring(xu);
-// xu_dump_txring(xu);
+//    xu_dump_rxring(xu);
+//    xu_dump_txring(xu);
 
       break;
 
@@ -1126,11 +1136,11 @@ int32 xu_command(CTLR* xu)
       udb[20] = 0x0700;                   /* hatype<07:00> + fval2 */
       udb[21] = 0x0600;                   /* halen + hatype<15:08> */
                                           /* built-in MAC address */
-      udb[21] = mac_w[0];                 /* HA<15:00> */
-      udb[22] = mac_w[1];                 /* HA<31:16> */
-      udb[23] = mac_w[2];                 /* HA<47:32> */
-      udb[24] = 0x64;                     /* dtype */
-      udb[25] = (11 << 8) + 1;            /* dvalue + dlen */
+      udb[22] = mac_w[0];                 /* HA<15:00> */
+      udb[23] = mac_w[1];                 /* HA<31:16> */
+      udb[24] = mac_w[2];                 /* HA<47:32> */
+      udb[25] = 0x64;                     /* dtype */
+      udb[26] = (11 << 8) + 1;            /* dvalue + dlen */
       
       /* transfer udb to host */
       udbb = xu->var->pcb[1] + ((xu->var->pcb[2] & 3) << 16);
@@ -1196,7 +1206,7 @@ void xu_process_receive(CTLR* xu)
 
   sim_debug(DBG_TRC, xu->dev, "xu_process_receive(), buffers: %d\n", xu->var->rrlen);
 
-/* xu_dump_rxring(xu); *//* debug receive ring */
+// xu_dump_rxring(xu);  /* debug receive ring */
 
   /* process only when in the running state, and host buffers are available */
   if ((state != STATE_RUNNING) || no_buffers)
@@ -1225,7 +1235,7 @@ void xu_process_receive(CTLR* xu)
     if (!(xu->var->rxhdr[2] & RXR_OWN)) {
       /* tell the host there are no more buffers */
       /* xu->var->pcsr0 |= PCSR0_RCBI; */ /* I don't think this is correct 08-dec-2005 dth */
-      sim_debug(DBG_TRC, xu->dev, "Stopping input processing - Not Owned receive descriptor=0x%X, slen=0x%04X(%d), segb=0x%04X, ", ba, slen, slen, segb);
+      sim_debug(DBG_TRC, xu->dev, "Stopping input processing - Not Owned receive descriptor=0x%X, ", ba);
       sim_debug_bits(DBG_TRC, xu->dev, xu_rdes_w2, xu->var->rxhdr[2], xu->var->rxhdr[2], 0);
       sim_debug_bits(DBG_TRC, xu->dev, xu_rdes_w3, xu->var->rxhdr[3], xu->var->rxhdr[3], 1);
       break;
@@ -1371,7 +1381,7 @@ void xu_process_receive(CTLR* xu)
 
   /* set or clear interrupt, depending on what happened */
   xu_setclrint(xu, 0);
-// xu_dump_rxring(xu); /* debug receive ring */
+// xu_dump_rxring(xu);  /* debug receive ring */
 
 }
 
@@ -1766,10 +1776,6 @@ t_stat xu_attach(UNIT* uptr, CONST char* cptr)
   }
   eth_set_throttle (xu->var->etherface, xu->var->throttle_time, xu->var->throttle_burst, xu->var->throttle_delay);
   if (SCPE_OK != eth_check_address_conflict (xu->var->etherface, &xu->var->mac)) {
-    char buf[32];
-
-    eth_mac_fmt(&xu->var->mac, buf);     /* format ethernet mac address */
-    sim_printf("%s: MAC Address Conflict on LAN for address %s\n", xu->dev->name, buf);
     eth_close(xu->var->etherface);
     free(tptr);
     free(xu->var->etherface);

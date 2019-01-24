@@ -1,6 +1,6 @@
 /* pdp8_cpu.c: PDP-8 CPU simulator
 
-   Copyright (c) 1993-2013, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,11 @@
 
    cpu          central processor
 
+   07-Sep-17    RMS     Fixed sim_eval declaration in history routine (COVERITY)
+   09-Mar-17    RMS     Fixed PCQ_ENTRY for interrupts (COVERITY)
+   13-Feb-17    RMS     RESET clear L'AC, per schematics
+   28-Jan-17    RMS     Renamed switch register variable to SR, per request
+   18-Sep-16    RMS     Added alternate dispatch table for non-contiguous devices
    17-Sep-13    RMS     Fixed boot in wrong field problem (Dave Gesswein)
    28-Apr-07    RMS     Removed clock initialization
    30-Oct-06    RMS     Added idle and infinite loop detection
@@ -192,7 +197,7 @@
 
 #define PCQ_SIZE        64                              /* must be 2**n */
 #define PCQ_MASK        (PCQ_SIZE - 1)
-#define PCQ_ENTRY       pcq[pcq_p = (pcq_p - 1) & PCQ_MASK] = MA
+#define PCQ_ENTRY(x)    pcq[pcq_p = (pcq_p - 1) & PCQ_MASK] = x
 #define UNIT_V_NOEAE    (UNIT_V_UF)                     /* EAE absent */
 #define UNIT_NOEAE      (1 << UNIT_V_NOEAE)
 #define UNIT_V_MSIZE    (UNIT_V_UF + 1)                 /* dummy mask */
@@ -224,11 +229,12 @@ int32 gtf = 0;                                          /* EAE gtf flag */
 int32 SC = 0;                                           /* EAE shift count */
 int32 UB = 0;                                           /* User mode Buffer */
 int32 UF = 0;                                           /* User mode Flag */
-int32 OSR = 0;                                          /* Switch Register */
+int32 SR = 0;                                           /* Switch Register */
 int32 tsc_ir = 0;                                       /* TSC8-75 IR */
 int32 tsc_pc = 0;                                       /* TSC8-75 PC */
 int32 tsc_cdf = 0;                                      /* TSC8-75 CDF flag */
 int32 tsc_enb = 0;                                      /* TSC8-75 enabled */
+int32 cpu_astop = 0;                                    /* address stop */
 int16 pcq[PCQ_SIZE] = { 0 };                            /* PC queue */
 int32 pcq_p = 0;                                        /* PC queue ptr */
 REG *pcq_r = NULL;                                      /* PC queue reg ptr */
@@ -264,7 +270,7 @@ REG cpu_reg[] = {
     { ORDATAD (AC, saved_LAC, 12, "accumulator") },
     { FLDATAD (L, saved_LAC, 12, "link") },
     { ORDATAD (MQ, saved_MQ, 12, "multiplier-quotient") },
-    { ORDATAD (SR, OSR, 12, "front panel switches") },
+    { ORDATAD (SR, SR, 12, "front panel switches") },
     { GRDATAD (IF, saved_PC, 8, 3, 12, "instruction field") },
     { GRDATAD (DF, saved_DF, 8, 3, 12, "data field") },
     { GRDATAD (IB, IB, 8, 3, 12, "instruction field buffter") },
@@ -338,6 +344,12 @@ reason = 0;
 
 while (reason == 0) {                                   /* loop until halted */
 
+    if (cpu_astop != 0) {
+        cpu_astop = 0;
+        reason = SCPE_STOP;
+        break;
+        }
+
     if (sim_interval <= 0) {                            /* check clock queue */
         if ((reason = sim_process_event ()))
             break;
@@ -346,8 +358,8 @@ while (reason == 0) {                                   /* loop until halted */
     if (int_req > INT_PENDING) {                        /* interrupt? */
         int_req = int_req & ~INT_ION;                   /* interrupts off */
         SF = (UF << 6) | (IF >> 9) | (DF >> 12);        /* form save field */
+        PCQ_ENTRY (IF | PC);                            /* save old PC with IF */
         IF = IB = DF = UF = UB = 0;                     /* clear mem ext */
-        PCQ_ENTRY;                                      /* save old PC */
         M[0] = PC;                                      /* save PC in 0 */
         PC = 1;                                         /* fetch next from 1 */
         }
@@ -560,7 +572,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
    as usual. */
 
     case 020:                                           /* JMS, dir, zero */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = IR & 0177;                                 /* dir addr, page zero */
         if (UF) {                                       /* user mode? */
             tsc_ir = IR;                                /* save instruction */
@@ -582,7 +594,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
         break;
 
     case 021:                                           /* JMS, dir, curr */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = (MA & 007600) | (IR & 0177);               /* dir addr, curr page */
         if (UF) {                                       /* user mode? */
             tsc_ir = IR;                                /* save instruction */
@@ -604,7 +616,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
         break;
 
     case 022:                                           /* JMS, indir, zero */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = IF | (IR & 0177);                          /* dir addr, page zero */
         if ((MA & 07770) != 00010)                      /* indirect; autoinc? */
             MA = M[MA];
@@ -629,7 +641,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
         break;
 
     case 023:                                           /* JMS, indir, curr */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = (MA & 077600) | (IR & 0177);               /* dir addr, curr page */
         if ((MA & 07770) != 00010)                      /* indirect; autoinc? */
             MA = M[MA];
@@ -662,7 +674,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
 
 
     case 024:                                           /* JMP, dir, zero */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = IR & 0177;                                 /* dir addr, page zero */
         if (UF) {                                       /* user mode? */
             tsc_ir = IR;                                /* save instruction */
@@ -681,7 +693,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
 /* If JMP direct, also check for idle (KSF/JMP *-1) and infinite loop */
 
     case 025:                                           /* JMP, dir, curr */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = (MA & 007600) | (IR & 0177);               /* dir addr, curr page */
         if (UF) {                                       /* user mode? */
             tsc_ir = IR;                                /* save instruction */
@@ -712,7 +724,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
         break;
 
     case 026:                                           /* JMP, indir, zero */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = IF | (IR & 0177);                          /* dir addr, page zero */
         if ((MA & 07770) != 00010)                      /* indirect; autoinc? */
             MA = M[MA];
@@ -732,7 +744,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
         break;
 
     case 027:                                           /* JMP, indir, curr */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = (MA & 077600) | (IR & 0177);               /* dir addr, curr page */
         if ((MA & 07770) != 00010)                      /* indirect; autoinc? */
             MA = M[MA];
@@ -913,7 +925,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
                 }
             else {
                 if (IR & 04)                            /* OSR */
-                    LAC = LAC | OSR;
+                    LAC = LAC | SR;
                 if (IR & 02)                            /* HLT */
                     reason = STOP_HALT;
                 }
@@ -1363,6 +1375,7 @@ return reason;
 
 t_stat cpu_reset (DEVICE *dptr)
 {
+saved_LAC = 0;
 int_req = (int_req & ~INT_ION) | INT_NO_CIF_PENDING;
 saved_DF = IB = saved_PC & 070000;
 UF = UB = gtf = emode = 0;
@@ -1496,16 +1509,31 @@ for (i = 0; i < ((uint32) sizeof (std_dev)); i++)       /* std entries */
 for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {     /* add devices */
     dibp = (DIB *) dptr->ctxt;                          /* get DIB */
     if (dibp && !(dptr->flags & DEV_DIS)) {             /* enabled? */
-        for (j = 0; j < dibp->num; j++) {               /* loop thru disp */
-            if (dibp->dsp[j]) {                         /* any dispatch? */
-                if (dev_tab[dibp->dev + j]) {           /* already filled? */
-                    sim_printf ("%s device number conflict at %02o\n",
-                                sim_dname (dptr), dibp->dev + j);
-                    return TRUE;
-                    }
-                dev_tab[dibp->dev + j] = dibp->dsp[j];  /* fill */
-                }                                       /* end if dsp */
-            }                                           /* end for j */
+        if (dibp->dsp_tbl) {                            /* dispatch table? */
+            DIB_DSP *dspp = dibp->dsp_tbl;              /* set ptr */
+            for (j = 0; j < dibp->num; j++, dspp++) {   /* loop thru tbl */
+                if (dspp->dsp) {                        /* any dispatch? */
+                    if (dev_tab[dspp->dev]) {           /* already filled? */
+                        sim_printf ("%s device number conflict at %02o\n",
+                            sim_dname (dptr), dibp->dev + j);
+                        return TRUE;
+                        }
+                    dev_tab[dspp->dev] = dspp->dsp;     /* fill */
+                    }                                   /* end if dsp */
+                }                                       /* end for j */
+            }                                           /* end if dsp_tbl */
+        else {                                          /* inline dispatches */
+            for (j = 0; j < dibp->num; j++) {           /* loop thru disp */
+                if (dibp->dsp[j]) {                     /* any dispatch? */
+                    if (dev_tab[dibp->dev + j]) {       /* already filled? */
+                        sim_printf ("%s device number conflict at %02o\n",
+                            sim_dname (dptr), dibp->dev + j);
+                        return TRUE;
+                        }
+                    dev_tab[dibp->dev + j] = dibp->dsp[j]; /* fill */
+                    }                                   /* end if dsp */
+                }                                       /* end for j */
+            }                                           /* end else */
         }                                               /* end if enb */
     }                                                   /* end for i */
 return FALSE;
@@ -1549,7 +1577,6 @@ t_stat cpu_show_hist (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 int32 l, k, di, lnt;
 const char *cptr = (const char *) desc;
 t_stat r;
-t_value sim_eval;
 InstHistory *h;
 
 if (hst_lnt == 0)                                       /* enabled? */
@@ -1572,8 +1599,8 @@ for (k = 0; k < lnt; k++) {                             /* print specified */
         if (h->ir < 06000)
             fprintf (st, "%05o  ", h->ea);
         else fprintf (st, "       ");
-        sim_eval = h->ir;
-        if ((fprint_sym (st, h->pc & ADDRMASK, &sim_eval, &cpu_unit, SWMASK ('M'))) > 0)
+        sim_eval[0] = h->ir;
+        if ((fprint_sym (st, h->pc & ADDRMASK, sim_eval, &cpu_unit, SWMASK ('M'))) > 0)
             fprintf (st, "(undefined) %04o", h->ir);
         if (h->ir < 04000)
             fprintf (st, "  [%04o]", h->opnd);

@@ -45,17 +45,14 @@
 
 #if defined (VM_PDP10)                                  /* PDP10 version */
 #include "pdp10_defs.h"
-extern int32 int_req;
 #define DEV_DISI        DEV_DIS
 
 #elif defined (VM_VAX)                                  /* VAX version */
 #include "vax_defs.h"
-extern int32 int_req[IPL_HLVL];
 #define DEV_DISI        0
 
 #else                                                   /* PDP-11 version */
 #include "pdp11_defs.h"
-extern int32 int_req[IPL_HLVL];
 #define DEV_DISI        DEV_DIS
 #endif
 
@@ -692,14 +689,13 @@ static const uint16 boot_rom[] = {
 t_stat ry_boot (int32 unitno, DEVICE *dptr)
 {
 size_t i;
-extern uint16 *M;
 
 if ((ry_unit[unitno & RX_M_NUMDR].flags & UNIT_DEN) == 0)
     return SCPE_NOFNC;
 for (i = 0; i < BOOT_LEN; i++)
-    M[(BOOT_START >> 1) + i] = boot_rom[i];
-M[BOOT_UNIT >> 1] = unitno & RX_M_NUMDR;
-M[BOOT_CSR >> 1] = ry_dib.ba & DMASK;
+    WrMemW (BOOT_START + (2 * i), boot_rom[i]);
+WrMemW (BOOT_UNIT, unitno & RX_M_NUMDR);
+WrMemW (BOOT_CSR, ry_dib.ba & DMASK);
 cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 }

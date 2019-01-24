@@ -1,6 +1,6 @@
 /* vax_cpu1.c: VAX complex instructions
 
-   Copyright (c) 1998-2012, Robert M Supnik
+   Copyright (c) 1998-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,11 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   13-Mar-17    RMS     Annotated fall through in switch
+   14-Jul-16    RMS     Corrected REI rule 9
+   21-Jun-16    RMS     Removed reserved check on SIRR (Mark Pizzolato)
+   18-Feb-16    RMS     Changed variables in MxPR to unsigned
+   29-Mar-15    RMS     Added model-specific IPR max
    15-Mar-12    RMS     Fixed potential integer overflow in LDPCTX (Mark Pizzolato)
    25-Nov-11    RMS     Added VEC_QBUS test in interrupt handler
    23-Mar-11    RMS     Revised idle design (Mark Pizzolato)
@@ -861,7 +866,7 @@ switch (R[5] & MVC_M_STATE) {                           /* case on state */
         mlnt[2] = R[2] - mlnt[0] - mlnt[1];             /* tail */
         for (i = 0; i < 3; i++) {                       /* head, align, tail */
             lnt = looplnt[i];                           /* length for loop */
-            for (j = 0; j < mlnt[i]; j = j + lnt, sim_interval--) {
+            for (j = 0; j < mlnt[i]; j = j + lnt, extra_bytes++) {
                 wd = Read (R[1], lnt, RA);              /* read src */
                 Write (R[3], wd, lnt, WA);              /* write dst */
                 R[1] = R[1] + lnt;                      /* inc src addr */
@@ -879,7 +884,7 @@ switch (R[5] & MVC_M_STATE) {                           /* case on state */
         mlnt[2] = R[2] - mlnt[0] - mlnt[1];             /* tail */
         for (i = 0; i < 3; i++) {                       /* head, align, tail */
             lnt = looplnt[i];                           /* length for loop */
-            for (j = 0; j < mlnt[i]; j = j + lnt, sim_interval--) {
+            for (j = 0; j < mlnt[i]; j = j + lnt, extra_bytes++) {
                 wd = Read (R[1] - lnt, lnt, RA);        /* read src */
                 Write (R[3] - lnt, wd, lnt, WA);        /* write dst */
                 R[1] = R[1] - lnt;                      /* dec src addr */
@@ -905,7 +910,7 @@ switch (R[5] & MVC_M_STATE) {                           /* case on state */
             fill = fill & BMASK;                        /* fill for loop */
             if (lnt == L_LONG)
                 fill = (((uint32) fill) << 24) | (fill << 16) | (fill << 8) | fill;
-            for (j = 0; j < mlnt[i]; j = j + lnt, sim_interval--) {
+            for (j = 0; j < mlnt[i]; j = j + lnt, extra_bytes++) {
                 Write (R[3], fill, lnt, WA);            /* write fill */
                 R[3] = R[3] + lnt;                      /* inc dst addr */
                 R[4] = R[4] - lnt;                      /* dec fill lnt */
@@ -969,7 +974,7 @@ else {
     PSL = PSL | PSL_FPD;
     }
 R[2] = R[2] & STR_LNMASK;                               /* mask src2len */
-for (s1 = s2 = 0; ((R[0] | R[2]) & STR_LNMASK) != 0; sim_interval--) {
+for (s1 = s2 = 0; ((R[0] | R[2]) & STR_LNMASK) != 0; extra_bytes++) {
     if (R[0] & STR_LNMASK)                              /* src1? read */
         s1 = Read (R[1], L_BYTE, RA);
     else s1 = fill;                                     /* no, use fill */
@@ -1019,7 +1024,7 @@ else {
     R[1] = opnd[2];                                     /* src addr */
     PSL = PSL | PSL_FPD;
     }
-for ( ; (R[0] & STR_LNMASK) != 0; sim_interval-- ) {    /* loop thru string */
+for ( ; (R[0] & STR_LNMASK) != 0; extra_bytes++ ) {    /* loop thru string */
     c = Read (R[1], L_BYTE, RA);                        /* get src byte */
     if ((c == match) ^ skpc)                            /* match & locc? */
         break;
@@ -1060,7 +1065,7 @@ else {
     R[0] = STR_PACK (mask, opnd[0]);                    /* srclen + FPD data */
     PSL = PSL | PSL_FPD;
     }
-for ( ; (R[0] & STR_LNMASK) != 0; sim_interval-- ) {    /* loop thru string */
+for ( ; (R[0] & STR_LNMASK) != 0; extra_bytes++ ) {    /* loop thru string */
     c = Read (R[1], L_BYTE, RA);                        /* get byte */
     t = Read (R[3] + c, L_BYTE, RA);                    /* get table ent */
     if (((t & mask) != 0) ^ spanc)                      /* test vs instr */
@@ -1193,8 +1198,13 @@ Rule    SRM formulation                     Comment
  6      tmp<25:24> LEQ tmp<23:22>           tmp<cur_mode> LEQ tmp<prv_mode>
  7      tmp<20:16> LEQ PSL<20:16>           tmp<ipl> LEQ PSL<ipl>
  8      tmp<31,29:28,21,15:8> = 0           tmp<mbz> = 0
- 9      tmp<31> = 1 => tmp<cur_mode> = 3, tmp<prv_mode> = 3>, tmp<fpd,is,ipl> = 0 
+ 9      tmp<31> = 1 => tmp<cur_mode> = 3, tmp<prv_mode> = 3>, tmp<fpd,is,ipl,dv,fu,iv> = 0 
 */
+
+#define REI_RSVD_FAULT(desc) do {                                                                                   \
+        sim_debug (LOG_CPU_FAULT_RSVD, &cpu_dev, "PC=%08x, PSL=%08x, SP=%08x, nPC=%08x, nPSL=%08x, nSP=%08x - %s\n",\
+                     PC, PSL, SP - 8, newpc, newpsl, ((newpsl & IS)? IS: STK[newcur]), desc);                       \
+        RSVD_OPND_FAULT; } while (0)
 
 int32 op_rei (int32 acc)
 {
@@ -1206,23 +1216,23 @@ int32 newipl, i;
 
 if ((newpsl & PSL_MBZ) ||                               /* rule 8 */
     (newcur < oldcur))                                  /* rule 1 */
-    RSVD_OPND_FAULT;
+    REI_RSVD_FAULT("rule 8 or rule 1");
 if (newcur) {                                           /* to esu, skip 2,4,7 */
     if ((newpsl & (PSL_IS | PSL_IPL)) ||                /* rules 3,5 */
         (newcur > PSL_GETPRV (newpsl)))                 /* rule 6 */
-        RSVD_OPND_FAULT;                                /* end rei to esu */
+        REI_RSVD_FAULT("rule 3,5 or rule 6");           /* end rei to esu */
     }
 else {                                                  /* to k, skip 3,5,6 */
     newipl = PSL_GETIPL (newpsl);                       /* get new ipl */
     if ((newpsl & PSL_IS) &&                            /* setting IS? */
-       (((PSL & PSL_IS) == 0) || (newipl == 0)))        /* test rules 2,4 */
-        RSVD_OPND_FAULT;                                /* else skip 2,4 */
+        (((PSL & PSL_IS) == 0) || (newipl == 0)))       /* test rules 2,4 */
+        REI_RSVD_FAULT("rule 2 or rule 4");             /* else skip 2,4 */
     if (newipl > PSL_GETIPL (PSL))                      /* test rule 7 */
-        RSVD_OPND_FAULT;
+        REI_RSVD_FAULT("rule 7");
     }                                                   /* end if kernel */
 if (newpsl & PSL_CM) {                                  /* setting cmode? */
     if (BadCmPSL (newpsl))                              /* validate PSL */
-        RSVD_OPND_FAULT;
+        REI_RSVD_FAULT("cmode invalid PSL");
     for (i = 0; i < 7; i++)                             /* mask R0-R6, PC */
         R[i] = R[i] & WMASK;
     newpc = newpc & WMASK;
@@ -1230,7 +1240,8 @@ if (newpsl & PSL_CM) {                                  /* setting cmode? */
 SP = SP + 8;                                            /* pop stack */
 if (PSL & PSL_IS)                                       /* save stack */
     IS = SP;
-else STK[oldcur] = SP;
+else 
+    STK[oldcur] = SP;
 sim_debug (LOG_CPU_R, &cpu_dev, "PC=%08x, PSL=%08x, SP=%08x, nPC=%08x, nPSL=%08x, nSP=%08x\n",
              PC, PSL, SP - 8, newpc, newpsl, ((newpsl & IS)? IS: STK[newcur]));
 PSL = (PSL & PSL_TP) | (newpsl & ~CC_MASK);             /* set PSL */
@@ -1501,15 +1512,14 @@ switch (prn) {                                          /* case on reg # */
         break;
 
     case MT_ASTLVL:                                     /* ASTLVL */
-        if (val > AST_MAX)                              /* > 4? fault */
-            RSVD_OPND_FAULT;
+        MT_AST_TEST (val);                              /* trim, test val */
         ASTLVL = val;
         break;
 
     case MT_SIRR:                                       /* SIRR */
-        if ((val > 0xF) || (val == 0))
-            RSVD_OPND_FAULT;
-        SISR = SISR | (1 << val);                       /* set bit in SISR */
+        val = val & 0xF;                                /* consider only 4b */
+        if (val != 0)                                   /* if not zero */
+            SISR = SISR | (1 << val);                   /* set bit in SISR */
         break;
 
     case MT_SISR:                                       /* SISR */
@@ -1518,6 +1528,7 @@ switch (prn) {                                          /* case on reg # */
 
     case MT_MAPEN:                                      /* MAPEN */
         mapen = val & 1;
+        /* fall through */
     case MT_TBIA:                                       /* TBIA */
         zap_tb (1);                                     /* clr entire TLB */
         break;
@@ -1545,7 +1556,7 @@ return cc;
 
 int32 op_mfpr (int32 *opnd)
 {
-int32 prn = opnd[0];
+uint32 prn = (uint32)opnd[0];
 int32 val;
 
 if (PSL & PSL_CUR)                                      /* must be kernel */

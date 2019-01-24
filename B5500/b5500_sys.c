@@ -90,8 +90,8 @@ DEBTAB              dev_debug[] = {
 };
 
 
-uint8                parity_table[64] = { 
-    /* 0    1    2    3    4    5    6    7 */ 
+uint8                parity_table[64] = {
+    /* 0    1    2    3    4    5    6    7 */
     0000, 0100, 0100, 0000, 0100, 0000, 0000, 0100,
     0100, 0000, 0000, 0100, 0000, 0100, 0100, 0000,
     0100, 0000, 0000, 0100, 0000, 0100, 0100, 0000,
@@ -103,15 +103,15 @@ uint8                parity_table[64] = {
 };
 
 uint8           mem_to_ascii[64] = {
-   /* x0   x1   x2   x3   x4   x5   x6   x7 */ 
+   /* x0   x1   x2   x3   x4   x5   x6   x7 */
      '0', '1', '2', '3', '4', '5', '6', '7',     /* 0x */
      '8', '9', '#', '@', '?', ':', '>', '}',     /* 1x */
      '+', 'A', 'B', 'C', 'D', 'E', 'F', 'G',     /* 2x */
      'H', 'I', '.', '[', '&', '(', '<', '~',     /* 3x */
-     '|', 'J', 'K', 'L', 'M', 'N', 'O', 'P',     /* 4x */ 
-     'Q', 'R', '$', '*', '-', ')', ';', '{',     /* 5x */ 
-     ' ', '/', 'S', 'T', 'U', 'V', 'W', 'X',     /* 6x */ 
-     'Y', 'Z', ',', '%', '!', '=', ']', '"'      /* 7x */ 
+     '|', 'J', 'K', 'L', 'M', 'N', 'O', 'P',     /* 4x */
+     'Q', 'R', '$', '*', '-', ')', ';', '{',     /* 5x */
+     ' ', '/', 'S', 'T', 'U', 'V', 'W', 'X',     /* 6x */
+     'Y', 'Z', ',', '%', '!', '=', ']', '"'      /* 7x */
 };
 
 const char          con_to_ascii[64] = {
@@ -136,7 +136,7 @@ const char          ascii_to_con[128] = {
    /* Control                              */
      -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,
    /*sp    !    "    #    $    %    &    ' */
-    020, 032, 037, 013, 053, 017, 060, 014,     /* 40 - 77 */
+    020, 032, 037, 013, 053, 034, 060, 014,     /* 40 - 77 */
    /* (    )    *    +    ,    -    .    / */
     075, 055, 054, 072, 033, 040, 073, 021,
    /* 0    1    2    3    4    5    6    7 */
@@ -150,7 +150,7 @@ const char          ascii_to_con[128] = {
    /* P    Q    R    S    T    U    V    W */
     047, 050, 051, 022, 023, 024, 025, 026,
    /* X    Y    Z    [    \    ]    ^    _ */
-    027, 030, 031, 075, 036, 055, 057, 000,
+    027, 030, 031, 074, 036, 036, 057, 000,
    /* `    a    b    c    d    e    f    g */
     035, 061, 062, 063, 064, 065, 066, 067,     /* 140 - 177 */
    /* h    i    j    k    l    m    n    o */
@@ -158,7 +158,7 @@ const char          ascii_to_con[128] = {
    /* p    q    r    s    t    u    v    w */
     047, 050, 051, 022, 023, 024, 025, 026,
    /* x    y    z    {    |    }    ~   del*/
-    027, 030, 031, 057, 077, 017,  -1,  -1
+    027, 030, 031, 057, 052, 017,  -1,  -1
 };
 
 
@@ -341,21 +341,22 @@ t_opcode  char_ops[] = {
 
 /* Print out an instruction */
 void
-print_opcode(FILE * of, t_value val, t_opcode * tab)
+print_opcode(FILE * of, t_value val, int chr_mode)
 {
     uint16      op;
+    t_opcode   *tab = (chr_mode) ? char_ops: word_ops;
 
     op = val;
     while (tab->name != NULL) {
         switch(tab->type) {
         case TYPE_A:
-                if (op != tab->op) 
+                if (op != tab->op)
                    break;
                 fputs(tab->name, of);
                 fputs("       ",of);
                 return;
         case TYPE_B:
-                if ((op & 077) != tab->op) 
+                if ((op & 077) != tab->op)
                    break;
                 fputs(tab->name, of);
                 fputc(' ',of);
@@ -410,14 +411,14 @@ fprint_sym(FILE * of, t_addr addr, t_value * val, UNIT * uptr, int32 sw)
         fputs("   ", of);
         for (i = 36; i >= 0; i-=12) {
                 int     op = (int)(inst >> i) & 07777;
-                print_opcode(of, op, word_ops);
+                print_opcode(of, op, 0);
         }
     }
     if (sw & SWMASK('C')) {     /* Char mode opcodes */
         fputs("   ", of);
         for (i = 36; i >= 0; i-=12) {
                 int     op = (int)(inst >> i) & 07777;
-                print_opcode(of, op, char_ops);
+                print_opcode(of, op, 1);
         }
     }
     if (sw & SWMASK('B')) {     /* BCD mode */
@@ -431,7 +432,7 @@ fprint_sym(FILE * of, t_addr addr, t_value * val, UNIT * uptr, int32 sw)
         fputc('\'', of);
     }
     if (sw & SWMASK('F')) {     /* Floating point/Descriptor */
-    }   
+    }
     return SCPE_OK;
 }
 
@@ -474,10 +475,10 @@ parse_sym(CONST char *cptr, t_addr addr, UNIT * uptr, t_value * val, int32 sw)
 
         /* Grab opcode */
         cptr = get_glyph(cptr, opcode, 0);
-        
+
         op = 0;
         opr = -1;
-        if((op = find_opcode(opcode, 
+        if((op = find_opcode(opcode,
                 (SWMASK('W') ? word_ops : char_ops))) == 0) {
             return SCPE_UNK;
         }
@@ -492,25 +493,25 @@ parse_sym(CONST char *cptr, t_addr addr, UNIT * uptr, t_value * val, int32 sw)
             cptr++;
         switch (op->type) {
         case TYPE_A:
-                if (opr >= 0) 
+                if (opr >= 0)
                    return SCPE_2MARG;
                 *val = op->op;
                 return SCPE_OK;
 
         case TYPE_B:
-                if (opr < 0 || opr > 64) 
+                if (opr < 0 || opr > 64)
                    return SCPE_ARG;
                 *val = (opr << 6) | op->op;
                 return SCPE_OK;
 
         case TYPE_C:
-                if (opr < 0 || opr > 16) 
+                if (opr < 0 || opr > 16)
                    return SCPE_ARG;
                 *val = (opr << 8) | op->op;
                 return SCPE_OK;
 
         case TYPE_D:
-                if (opr < 0 || opr > 1024) 
+                if (opr < 0 || opr > 1024)
                    return SCPE_ARG;
                 *val = (opr << 2) | op->op;
                 return SCPE_OK;
@@ -531,11 +532,5 @@ parse_sym(CONST char *cptr, t_addr addr, UNIT * uptr, t_value * val, int32 sw)
         }
     }
     *val = d;
-    return SCPE_OK;
-
-/* Symbolic input, continued */
-
-    if (*cptr != 0)
-        return SCPE_ARG;        /* junk at end? */
     return SCPE_OK;
 }

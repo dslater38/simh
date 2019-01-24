@@ -23,6 +23,11 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   18-Jul-16    JDB     Added sim_tape_errecf, sim_tape_errecr functions
+   15-Dec-14    JDB     Added tape density validity flags
+   04-Nov-14    JDB     Added tape density flags
+   11-Oct-14    JDB     Added reverse read half gap, set/show density
+   22-Sep-14    JDB     Added tape runaway support
    23-Jan-12    MP      Added support for Logical EOT detection while positioning
    05-Feb-11    MP      Add Asynch I/O support
    30-Aug-06    JDB     Added erase gap support
@@ -146,9 +151,9 @@ typedef void (*TAPE_PCALLBACK)(UNIT *unit, t_stat status);
 
 /* Tape Internal Debug flags */
 
-#define MTSE_DBG_DAT   0x0400000                        /* Debug Data */
-#define MTSE_DBG_POS   0x0800000                        /* Debug Positioning activities */
-#define MTSE_DBG_STR   0x1000000                        /* Debug Tape Structure */
+#define MTSE_DBG_DAT   0x20000000                       /* Debug Data */
+#define MTSE_DBG_POS   0x40000000                       /* Debug Positioning activities */
+#define MTSE_DBG_STR   0x80000000                       /* Debug Tape Structure */
 
 /* Prototypes */
 
@@ -170,6 +175,8 @@ t_stat sim_tape_wreomrw (UNIT *uptr);
 t_stat sim_tape_wreomrw_a (UNIT *uptr, TAPE_PCALLBACK callback);
 t_stat sim_tape_wrgap (UNIT *uptr, uint32 gaplen);
 t_stat sim_tape_wrgap_a (UNIT *uptr, uint32 gaplen, TAPE_PCALLBACK callback);
+t_stat sim_tape_errecf (UNIT *uptr, t_mtrlnt bc);
+t_stat sim_tape_errecr (UNIT *uptr, t_mtrlnt bc);
 t_stat sim_tape_sprecf (UNIT *uptr, t_mtrlnt *bc);
 t_stat sim_tape_sprecf_a (UNIT *uptr, t_mtrlnt *bc, TAPE_PCALLBACK callback);
 t_stat sim_tape_sprecsf (UNIT *uptr, uint32 count, uint32 *skipped);
@@ -202,6 +209,7 @@ t_stat sim_tape_set_dens (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat sim_tape_show_dens (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat sim_tape_set_asynch (UNIT *uptr, int latency);
 t_stat sim_tape_clr_asynch (UNIT *uptr);
+t_stat sim_tape_test (DEVICE *dptr);
 
 #ifdef  __cplusplus
 }

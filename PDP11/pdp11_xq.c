@@ -247,7 +247,6 @@
   ------------------------------------------------------------------------------
 */
 
-#include <assert.h>
 #include "pdp11_xq.h"
 #include "pdp11_xq_bootrom.h"
 
@@ -262,6 +261,7 @@ t_stat xq_svc(UNIT * uptr);
 t_stat xq_tmrsvc(UNIT * uptr);
 t_stat xq_startsvc(UNIT * uptr);
 t_stat xq_receivesvc(UNIT * uptr);
+t_stat xq_srqrsvc(UNIT * uptr);
 t_stat xq_reset (DEVICE * dptr);
 t_stat xq_attach (UNIT * uptr, CONST char * cptr);
 t_stat xq_detach (UNIT * uptr);
@@ -350,6 +350,7 @@ UNIT xqa_unit[] = {
  { UDATA (&xq_tmrsvc, UNIT_IDLE|UNIT_DIS, 0) },
  { UDATA (&xq_startsvc, UNIT_DIS, 0) },
  { UDATA (&xq_receivesvc, UNIT_DIS, 0) },
+ { UDATA (&xq_srqrsvc, UNIT_DIS, 0) },
 };
 
 BITFIELD xq_csr_bits[] = {
@@ -431,6 +432,7 @@ UNIT xqb_unit[] = {
  { UDATA (&xq_tmrsvc, UNIT_IDLE|UNIT_DIS, 0) },
  { UDATA (&xq_startsvc, UNIT_DIS, 0) },
  { UDATA (&xq_receivesvc, UNIT_DIS, 0) },
+ { UDATA (&xq_srqrsvc, UNIT_DIS, 0) },
 };
 
 REG xqb_reg[] = {
@@ -537,7 +539,7 @@ DEBTAB xq_debug[] = {
 
 DEVICE xq_dev = {
   "XQ", xqa_unit, xqa_reg, xq_mod,
-  4, XQ_RDX, 11, 1, XQ_RDX, 16,
+  5, XQ_RDX, 11, 1, XQ_RDX, 16,
   &xq_ex, &xq_dep, &xq_reset,
   &xq_boot, &xq_attach, &xq_detach,
   &xqa_dib, DEV_DISABLE | DEV_QBUS | DEV_DEBUG | DEV_ETHER,
@@ -547,7 +549,7 @@ DEVICE xq_dev = {
 
 DEVICE xqb_dev = {
   "XQB", xqb_unit, xqb_reg, xq_mod,
-  4, XQ_RDX, 11, 1, XQ_RDX, 16,
+  5, XQ_RDX, 11, 1, XQ_RDX, 16,
   &xq_ex, &xq_dep, &xq_reset,
   &xq_boot, &xq_attach, &xq_detach,
   &xqb_dib, DEV_DISABLE | DEV_DIS | DEV_QBUS | DEV_DEBUG | DEV_ETHER,
@@ -632,7 +634,7 @@ t_stat xq_ex (t_value* vptr, t_addr addr, UNIT* uptr, int32 sw)
     else
       if (xq->var->type == XQ_T_DELQA_PLUS)
         bootrom = xq_bootrom_delqat;
-  if (addr <= sizeof(xq_bootrom_delqa)/2)
+  if ((bootrom) && (addr < sizeof(xq_bootrom_delqa)/2))
     *vptr = bootrom[addr];
   else
     *vptr = 0;
@@ -1255,7 +1257,7 @@ t_stat xq_process_rbdl(CTLR* xq)
             xq->var->rbdl_buf[4] |= XQ_RST_ESETUP;/* loopback flag */
         break;
       case ETH_ITM_NORMAL: /* normal packet */
-        rbl -= 60;    /* keeps max packet size in 11 bits */
+        rbl = item->packet.len - 60;           /* keeps max packet size in 11 bits */
         xq->var->rbdl_buf[4] = (rbl & 0x0700); /* high bits of rbl */
         xq->var->rbdl_buf[4] |= 0x00f8;        /* set reserved bits to 1 */
         break;
@@ -1348,7 +1350,7 @@ t_stat xq_process_mop(CTLR* xq)
     } /* switch */
 
     /* process next meb */
-    meb += sizeof(struct xq_meb);
+    meb += 1;
 
   } /* while */
   return SCPE_OK;
@@ -1975,9 +1977,13 @@ t_stat xq_process_loopback(CTLR* xq, ETH_PACK* pack)
   ETH_MAC   *physical_address;
   t_stat    status;
   int offset   = 16 + (pack->msg[14] | (pack->msg[15] << 8));
-  int function = pack->msg[offset] | (pack->msg[offset+1] << 8);
+  int function;
 
-  sim_debug(DBG_TRC, xq->dev, "xq_process_loopback()\n");
+  if (offset > ETH_MAX_PACKET - 8)
+      return SCPE_NOFNC;
+  function = pack->msg[offset] | (pack->msg[offset+1] << 8);
+
+  sim_debug(DBG_TRC, xq->dev, "xq_process_loopback(function=%d)\n", function);
 
   if (function != 2 /*forward*/)
     return SCPE_NOFNC;
@@ -2351,7 +2357,7 @@ void xq_stop_receiver(CTLR* xq)
     eth_clr_async(xq->var->etherface);
 }
 
-t_stat xq_wr_srqr(CTLR* xq, int32 data)
+t_stat xq_wr_srqr_set(CTLR* xq, int32 data)
 {
   uint16 set_bits = data & XQ_SRQR_RW;                     /* set RW set bits */
 
@@ -2359,7 +2365,14 @@ t_stat xq_wr_srqr(CTLR* xq, int32 data)
 
   xq->var->srr = set_bits;
 
-  switch (set_bits) {
+  return sim_activate (&xq->unit[4], xq->var->startup_delay);
+}
+
+t_stat xq_wr_srqr_action(CTLR* xq)
+{
+  sim_debug(DBG_REG, xq->dev, "xq_wr_srqr_action(data=0x%04X)\n", xq->var->srr);
+
+  switch (xq->var->srr) {
     case XQ_SRQR_STRT: {
       t_stat status;
 
@@ -2473,7 +2486,7 @@ t_stat xq_wr(int32 ldata, int32 PA, int32 access)
         case 3:
           break;
         case 4:   /* SRQR */
-          xq_wr_srqr(xq, data);
+          xq_wr_srqr_set (xq, data);
           break;
         case 5:
           break;
@@ -2540,7 +2553,19 @@ t_stat xq_reset(DEVICE* dptr)
 
   /* One time only initializations */
   if (!xq->var->initialized) {
+    char uname[16];
+
     xq->var->initialized = TRUE;
+    sprintf (uname, "%s-SVC", dptr->name);
+    sim_set_uname (&dptr->units[0], uname);
+    sprintf (uname, "%s-TMRSVC", dptr->name);
+    sim_set_uname (&dptr->units[1], uname);
+    sprintf (uname, "%s-STARTSVC", dptr->name);
+    sim_set_uname (&dptr->units[2], uname);
+    sprintf (uname, "%s-RCVSVC", dptr->name);
+    sim_set_uname (&dptr->units[3], uname);
+    sprintf (uname, "%s-SRQRSVC", dptr->name);
+    sim_set_uname (&dptr->units[4], uname);
     /* Set an initial MAC address in the DEC range */
     xq_setmac (dptr->units, 0, "08:00:2B:00:00:00/24", NULL);
     }
@@ -2813,6 +2838,17 @@ t_stat xq_receivesvc(UNIT* uptr)
   return SCPE_OK;
 }
 
+t_stat xq_srqrsvc(UNIT * uptr)
+{
+  CTLR* xq = xq_unit2ctlr(uptr);
+
+  sim_debug(DBG_TRC, xq->dev, "xq_srqrsvc()\n");
+
+  xq_wr_srqr_action(xq);
+
+  return SCPE_OK;
+}
+
 /* attach device: */
 t_stat xq_attach(UNIT* uptr, CONST char* cptr)
 {
@@ -2865,10 +2901,6 @@ t_stat xq_attach(UNIT* uptr, CONST char* cptr)
     xq->var->must_poll = (SCPE_OK != eth_clr_async(xq->var->etherface));
   }
   if (SCPE_OK != eth_check_address_conflict (xq->var->etherface, &xq->var->mac)) {
-    char buf[32];
-
-    eth_mac_fmt(&xq->var->mac, buf);     /* format ethernet mac address */
-    sim_printf("%s: MAC Address Conflict on LAN for address %s, change the MAC address to a unique value\n", xq->dev->name, buf);
     eth_close(xq->var->etherface);
     free(tptr);
     free(xq->var->etherface);
@@ -3115,10 +3147,9 @@ t_stat xq_boot (int32 unitno, DEVICE *dptr)
 size_t i;
 DIB *dib = (DIB *)dptr->ctxt;
 extern int32 REGFILE[6][2];                 /* R0-R5, two sets */
-extern uint16 *M;                           /* Memory */
 
 for (i = 0; i < BOOT_LEN; i++)
-    M[(BOOT_START >> 1) + i] = boot_rom[i];
+    WrMemW (BOOT_START + (2 * i), boot_rom[i]);
 cpu_set_boot (BOOT_ENTRY);
 REGFILE[0][0] = ((dptr == &xq_dev) ? 4 : 5);
 return SCPE_OK;
@@ -3369,7 +3400,8 @@ const char helpString[] =
     "\n"
     " Due to this significant speed mismatch, there can be issues when\n"
     " simulated systems attempt to communicate with real PDP11 and VAX systems\n"
-    " on the LAN.  See SET %D THROTTLE to help accommodate such communications.\n"
+    " on the LAN.  See SET %D THROTTLE to help accommodate such communications\n"
+    " HELP %D CONF SET THROTTLE\n"
     "1 Related Devices\n"
     " The %D can facilitate communication with other simh simulators which\n"
     " have emulated Ethernet devices available as well as real systems that\n"

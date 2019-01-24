@@ -79,7 +79,6 @@
 #define DLOCSR_RD       (CSR_DONE|CSR_IE|DLOCSR_MNT|DLOCSR_XBR)
 #define DLOCSR_WR       (CSR_IE|DLOCSR_MNT|DLOCSR_XBR)
 
-extern int32 int_req[IPL_HLVL];
 extern int32 tmxr_poll;
 
 uint16 dli_csr[DLX_LINES] = { 0 };                      /* control/status */
@@ -140,6 +139,10 @@ REG dli_reg[] = {
     };
 
 MTAB dli_mod[] = {
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 004, "ADDRESS", "ADDRESS",
+      &set_addr, &show_addr, NULL, "Bus address" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 1, "VECTOR", "VECTOR",
+      &set_vec, &show_vec_mux, (void *) &dlx_desc, "Interrupt vector"  },
     { MTAB_XTD | MTAB_VDV, 1, NULL, "DISCONNECT",
       &tmxr_dscln, NULL, &dlx_desc },
     { UNIT_ATT, UNIT_ATT, "summary", NULL,
@@ -148,12 +151,8 @@ MTAB dli_mod[] = {
       NULL, &tmxr_show_cstat, (void *) &dlx_desc },
     { MTAB_XTD | MTAB_VDV | MTAB_NMO, 0, "STATISTICS", NULL,
       NULL, &tmxr_show_cstat, (void *) &dlx_desc },
-    { MTAB_XTD|MTAB_VDV, 0, "ADDRESS", NULL,
-      &set_addr, &show_addr, NULL },
     { MTAB_XTD | MTAB_VDV, 0, NULL, "AUTOCONFIGURE",
       &set_addr_flt, NULL, NULL },
-    { MTAB_XTD|MTAB_VDV, 1, "VECTOR", NULL,
-      &set_vec, &show_vec_mux, (void *) &dlx_desc },
     { MTAB_XTD | MTAB_VDV, 0, "LINES", "LINES",
       &dlx_set_lines, &tmxr_show_lines, (void *) &dlx_desc },
     { 0 }
@@ -165,18 +164,18 @@ MTAB dli_mod[] = {
 #define DBG_TRC  TMXR_DBG_TRC                           /* routine calls */
 
 DEBTAB dl_debug[] = {
-	{ "REG",       DBG_REG,   "Register Activities" },
-	{ "INT",       DBG_INT,   "Interrupt Activities" },
-	{ "XMT",  TMXR_DBG_XMT,   "Transmit Data" },
-	{ "RCV",  TMXR_DBG_RCV,   "Received Data" },
-	{ "RET",  TMXR_DBG_RET,   "Returned Received Data" },
-	{ "MDM",  TMXR_DBG_MDM,   "Modem Signals" },
-	{ "CON",  TMXR_DBG_CON,   "Connection Activities" },
-	{ "ASY",  TMXR_DBG_ASY,   "Asynchronous Activities" },
-	{ "TRC",       DBG_TRC,   "trace routine calls" },
-	{ "EXP",  TMXR_DBG_EXP,   "Expect Activities" },
-	{ "SEND", TMXR_DBG_SEND,  "Send Activities" },
-	{ 0 }
+    { "REG",       DBG_REG,   "Register Activities" },
+    { "INT",       DBG_INT,   "Interrupt Activities" },
+    { "XMT",  TMXR_DBG_XMT,   "Transmit Data" },
+    { "RCV",  TMXR_DBG_RCV,   "Received Data" },
+    { "RET",  TMXR_DBG_RET,   "Returned Received Data" },
+    { "MDM",  TMXR_DBG_MDM,   "Modem Signals" },
+    { "CON",  TMXR_DBG_CON,   "Connection Activities" },
+    { "ASY",  TMXR_DBG_ASY,   "Asynchronous Activities" },
+    { "TRC",       DBG_TRC,   "trace routine calls" },
+    { "EXP",  TMXR_DBG_EXP,   "Expect Activities" },
+    { "SEND", TMXR_DBG_SEND,  "Send Activities" },
+    { 0 }
 };
 
 
@@ -273,7 +272,7 @@ switch ((PA >> 1) & 03) {                               /* decode PA<2:1> */
         *data = dli_buf[ln] & DLIBUF_RD;
         dli_csr[ln] &= ~CSR_DONE;                       /* clr rcv done */
         dli_clr_int (ln, DLI_RCI);                      /* clr rcv int req */
-        /* Rechedule the next poll preceisely so that 
+        /* Reschedule the next poll preceisely so that 
            the programmed input speed is observed. */
         sim_clock_coschedule_abs (&dli_unit, tmxr_poll);
         break;

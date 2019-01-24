@@ -1,6 +1,6 @@
 /* alpha_cpu.c: Alpha CPU simulator
 
-   Copyright (c) 2003-2006, Robert M Supnik
+   Copyright (c) 2003-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -22,6 +22,11 @@
    Except as contained in this notice, the name of Robert M Supnik shall not be
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
+
+   05-Oct-2017  RMS     Fixed reversed definitions of FTOIS, FTOIT (Maurice Marks)
+   27-May-2017  RMS     Fixed MIN/MAXx4 iteration counts (Mark Pizzolato)
+   26-May-2017  RMS     Fixed other reversed definitions in opcode 12
+   28-Apr-2017  RMS     Fixed reversed definitions of INSQH, EXTQH (Maurice Marks)
 
    Alpha architecturally-defined CPU state:
 
@@ -1069,14 +1074,14 @@ while (reason == 0) {
             res = byte_zap (R[ra], 0x3 >> sc);
             break;
 
-        case 0x57:                                      /* EXTWH */
-            sc = (64 - (((uint32) rbv) << 3)) & 0x3F;
-            res = (R[ra] << sc) & M16;
-            break;
-
-        case 0x5A:                                      /* INSWH */
+        case 0x57:                                      /* INSWH */
             sc = (64 - (((uint32) rbv) << 3)) & 0x3F;
             res = (R[ra] & M16) >> sc;
+            break;
+
+        case 0x5A:                                      /* EXTWH */
+            sc = (64 - (((uint32) rbv) << 3)) & 0x3F;
+            res = (R[ra] << sc) & M16;
             break;
 
         case 0x62:                                      /* MSKLH */
@@ -1084,14 +1089,14 @@ while (reason == 0) {
             res = byte_zap (R[ra], 0xF >> sc);
             break;
 
-        case 0x67:                                      /* EXTLH */
-            sc = (64 - (((uint32) rbv) << 3)) & 0x3F;
-            res = (R[ra] << sc) & M32;
-            break;
-
-        case 0x6A:                                      /* INSLH */
+        case 0x67:                                      /* INSLH */
             sc = (64 - (((uint32) rbv) << 3)) & 0x3F;
             res = (R[ra] & M32) >> sc;
+            break;
+
+        case 0x6A:                                      /* EXTLH */
+            sc = (64 - (((uint32) rbv) << 3)) & 0x3F;
+            res = (R[ra] << sc) & M32;
             break;
 
         case 0x72:                                      /* MSKQH */
@@ -1099,14 +1104,14 @@ while (reason == 0) {
             res = byte_zap (R[ra], 0xFF >> sc);
             break;
 
-        case 0x77:                                      /* EXTQH */
-            sc = (64 - (((uint32) rbv) << 3)) & 0x3F;
-            res = R[ra] << sc;
-            break;
-
-        case 0x7A:                                      /* INSQH */
+        case 0x77:                                      /* INSQH */
             sc = (64 - (((uint32) rbv) << 3)) & 0x3F;
             res = R[ra] >> sc;
+            break;
+
+        case 0x7A:                                      /* EXTQH */
+            sc = (64 - (((uint32) rbv) << 3)) & 0x3F;
+            res = R[ra] << sc;
             break;
 
         default:
@@ -1494,16 +1499,16 @@ while (reason == 0) {
                 }
             break;
 
-        case 0x70:                                      /* FTOIS */
-            if (!(arch_mask & AMASK_FIX)) ABORT (EXC_RSVI);
-            if (fpen == 0) ABORT (EXC_FPDIS);           /* flt point disabled? */
-            res = op_sts (FR[ra]);
-            break;
-
-        case 0x78:                                      /* FTOIT */
+        case 0x70:                                      /* FTOIT */
             if (!(arch_mask & AMASK_FIX)) ABORT (EXC_RSVI);
             if (fpen == 0) ABORT (EXC_FPDIS);           /* flt point disabled? */
             res = FR[ra];
+            break;
+
+        case 0x78:                                      /* FTOIS */
+            if (!(arch_mask & AMASK_FIX)) ABORT (EXC_RSVI);
+            if (fpen == 0) ABORT (EXC_FPDIS);           /* flt point disabled? */
+            res = op_sts (FR[ra]);
             break;
 
         default:
@@ -1725,7 +1730,7 @@ return SCPE_OK;
 t_stat cpu_show_virt (FILE *of, UNIT *uptr, int32 val, CONST void *desc)
 {
 t_stat r;
-const char *cptr = (const char *) desc;
+CONST char *cptr = (CONST char *) desc;
 t_uint64 va, pa;
 
 if (cptr) {
@@ -1835,7 +1840,7 @@ return SCPE_OK;
 t_stat cpu_show_hist (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 int32 k, di, lnt;
-const char *cptr = (const char *) desc;
+CONST char *cptr = (CONST char *) desc;
 t_stat r;
 InstHistory *h;
 

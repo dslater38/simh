@@ -248,7 +248,7 @@ extern uint32 io_tio (uint32 rn, uint32 bva);
 extern uint32 io_tdv (uint32 rn, uint32 bva);
 extern uint32 io_hio (uint32 rn, uint32 bva);
 extern uint32 io_aio (uint32 rn, uint32 bva);
-extern t_stat int_reset (DEVICE *dev);
+extern uint32 int_reset (DEVICE *dev);
 extern void io_set_eimax (uint32 lnt);
 extern void io_sclr_req (uint32 inum, uint32 val);
 extern void io_sclr_arm (uint32 inum, uint32 val);
@@ -316,6 +316,7 @@ MTAB cpu_mod[] = {
     { CPUF_MODEL, CPUF_S5, "Sigma 5", "SIGMA5", &cpu_set_type },
     { CPUF_MODEL, CPUF_S6, "Sigma 6", "SIGMA6", &cpu_set_type },
     { CPUF_MODEL, CPUF_S7, "Sigma 7", "SIGMA7", &cpu_set_type },
+    { CPUF_MODEL, CPUF_S7B, "Sigma 7 BigMem", "SIGMA7B", & cpu_set_type },
 //    { CPUF_MODEL, CPUF_S8, "Sigma 8", "SIGMA8", &cpu_set_type },
 //    { CPUF_MODEL, CPUF_S9, "Sigma 9", "SIGMA9", &cpu_set_type },
 //    { CPUF_MODEL, CPUF_550, "550", "550", &cpu_set_type },
@@ -396,6 +397,8 @@ cpu_var_t cpu_tab[] = {
       CC1|CC2,      CPUF_STR|CPUF_MAP|CPUF_WLK|CPUF_DEC,    CPUF_FP|CPUF_LAMS },
     { 0x080E0000,   0xC8FFFE0F, 0x0FC,  PAMASK17,   14,     8,  /* S7 */
       CC1|CC2,      CPUF_STR|CPUF_MAP|CPUF_WLK,     CPUF_FP|CPUF_DEC|CPUF_LAMS },
+    { 0x080E0000,   0xC8FFFE0F, 0x0FC,  PAMASK20,   14,     8,  /* S7B */
+      CC1|CC2,      CPUF_STR|CPUF_MAP|CPUF_WLK,     CPUF_FP|CPUF_DEC|CPUF_LAMS },
     { 0x084E0000,   0xC8FF00C7, 0x0FC,  PAMASK17,   14,     8,  /* S8 */
       CC1|CC2|CC3,  CPUF_STR|CPUF_FP|CPUF_WLK|CPUF_LAMS,     0 },
     { 0x08060000,   0xC8400007, 0x0FC,  PAMASK22,   14,     8,  /* S9 */
@@ -442,7 +445,8 @@ while (reason == 0) {                                   /* loop until stop */
     if (int_hireq < NO_INT) {                           /* interrupt req? */
         uint32 sav_hi, vec, wd, op;
         
-        vec = io_ackn_int (sav_hi = int_hireq);         /* get vector */
+        sav_hi = int_hireq;                             /* save level */
+        vec = io_ackn_int (int_hireq);                  /* get vector */
         if (vec == 0) {                                 /* illegal vector? */
             reason = STOP_ILLVEC;                       /* something wrong */
             break;
@@ -477,7 +481,8 @@ while (reason == 0) {                                   /* loop until stop */
         if (PSW_QRX9 && (PC & PSW1_XA))                 /* S9 real ext && ext? */
             rpc = (PSW2 & PSW2_EA) | (PC & ~PSW1_XA);   /* 22b phys address */
         else rpc = PC;                                  /* standard 17b PC */
-        PC = cpu_add_PC (old_PC = PC, 1);               /* increment PC */
+        old_PC = PC;                                    /* save PC */
+        PC = cpu_add_PC (PC, 1);                        /* increment PC */
         if (((tr = ReadW (rpc << 2, &ir, VI)) != 0) ||  /* fetch inst, err? */
             ((tr = cpu_one_inst (rpc, ir)) != 0)) {     /* exec inst, error? */
             if (tr & TR_FL) {                           /* trap? */
@@ -1118,7 +1123,7 @@ switch (op) {
         res = R[rn] | opnd;
         CC34_W (res);                                   /* set CC's */
         R[rn] = res;                                    /* store */
-        break;
+    break;
 
     case OP_EOR:                                        /* xor */
         if ((tr = Ea (IR, &bva, VR, WD)) != 0)          /* get eff addr */
@@ -1128,7 +1133,7 @@ switch (op) {
         res = R[rn] ^ opnd;
         CC34_W (res);                                   /* set CC's */
         R[rn] = res;                                    /* store */
-        break;
+    break;
 
 /* Compares */
 
@@ -2699,7 +2704,7 @@ return SCPE_OK;
 t_stat cpu_show_addr (FILE *of, UNIT *uptr, int32 val, CONST void *desc)
 {
 t_stat r;
-const char *cptr = (const char *) desc;
+char *cptr = (char *) desc;
 uint32 ad, bpa, dlnt, virt;
 static const char *lnt_str[] = {
     "byte",
@@ -2819,7 +2824,7 @@ t_stat cpu_show_hist (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 int32 k, di, lnt;
 t_stat r;
-const char *cptr = (const char *) desc;
+char *cptr = (char *) desc;
 InstHistory *h;
 
 if (hst_lnt == 0)                                   /* enabled? */

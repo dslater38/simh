@@ -2,7 +2,7 @@
  *                                                                       *
  * $Id: tx0_cpu.c 2066 2009-02-27 15:57:22Z hharte $                     *
  *                                                                       *
- * Copyright (c) 2009-2012 Howard M. Harte.                              *
+ * Copyright (c) 2009-2017 Howard M. Harte.                              *
  * Based on pdp1_cpu.c, Copyright (c) 1993-2007, Robert M. Supnik        *
  *                                                                       *
  * Permission is hereby granted, free of charge, to any person obtaining *
@@ -233,6 +233,8 @@ In addtion, many of the operate-class micro-orders changed.
 #define UNIT_V_EXT      (UNIT_V_UF + 2)
 #define UNIT_EXT_INST   (1 << UNIT_V_EXT)
 #define UNIT_MSIZE      (1 << UNIT_V_MSIZE)
+
+#define MIN(a,b) (((a) < (b)) ? (a) : (b))
 
 #define HIST_PC         0x40000000
 #define HIST_V_SHF      18
@@ -651,9 +653,9 @@ t_stat sim_instr (void)
                         TRACE_PRINT(ADD_MSG, ("[%06o] AUX: y=%05o, XR=%05o = ", PC-1, newY, XR));
                         XR = XR + newY;
                         TRACE_PRINT(ADD_MSG, ("%05o\n", XR));
+                        inst_ctr.aux++;
                         break;
                     }
-                    inst_ctr.aux++;
                 case 4:     /* llr (Load Live Register) */
                     Read();
                     LR = MBR;
@@ -1160,7 +1162,6 @@ t_stat cpu_show_hist (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 int32 ov, pf, op, k, di, lnt;
 const char *cptr = (const char *) desc;
 t_stat r;
-t_value sim_eval;
 InstHistory *h;
 
 if (hst_lnt == 0) return SCPE_NOFNC;                    /* enabled? */
@@ -1183,8 +1184,8 @@ for (k = 0; k < lnt; k++) {                             /* print specified */
         if ((op < 032) && (op != 007))                  /* mem ref instr */
             fprintf (st, "%06o  ", h->ea);
         else fprintf (st, "        ");
-        sim_eval = h->ir;
-        if ((fprint_sym (st, h->pc & AMASK, &sim_eval, &cpu_unit, SWMASK ('M'))) > 0)
+        sim_eval[0] = h->ir;
+        if ((fprint_sym (st, h->pc & AMASK, sim_eval, &cpu_unit, SWMASK ('M'))) > 0)
             fprintf (st, "(undefined) %06o", h->ir);
         else if (op < 030)                              /* mem ref instr */
             fprintf (st, " [%06o]", h->opnd);
@@ -1194,19 +1195,24 @@ for (k = 0; k < lnt; k++) {                             /* print specified */
 return SCPE_OK;
 }
 
+#ifdef USE_DISPLAY
+#include "display/display.h"      /* prototypes */
+
 /* set "test switches"; from display code */
 void
-cpu_set_switches(unsigned long bits)
+cpu_set_switches(unsigned long v1, unsigned long v2)
 {
     /* just what we want; smaller CPUs might want to shift down? */
-    TAC = bits;
+    TAC = v1 ^ v2;
 }
 
-unsigned long
-cpu_get_switches(void)
+void
+cpu_get_switches(unsigned long *p1, unsigned long *p2)
 {
-    return TAC;
+    *p1 = TAC;
+    *p2 = 0;
 }
+#endif
 
 t_stat sim_load(FILE *fileref, CONST char *cptr, CONST char *fnam, int flag) {
     uint32 word;
@@ -1224,7 +1230,7 @@ t_stat sim_load(FILE *fileref, CONST char *cptr, CONST char *fnam, int flag) {
     } else {
         lo = strtotv(cptr, &result, 8) & 0xFFFF;
         sz = sim_fsize(fileref);
-        sz_words = sz / 4;
+        sz_words = MIN (sz, sizeof (M)) / 4;
         for (j = lo; j < sz_words; j++) {
             sim_fread(&word, 4, 1, fileref);
             M[j] = word;
@@ -1275,9 +1281,9 @@ Original Operate-class instruction micro orders for the 1956 TX-0 Instruction Se
 #define OOPR_DIS            0002000
 #define OOPR_R1C            0001000
 
-#define OOPR_SHF_MASK   0000300
+#define OOPR_SHF_MASK   0000600
 #define OOPR_SHR            0000400
-#define OOPR_CYR            0000300
+#define OOPR_CYR            0000600
 #define OOPR_MLR            0000200
 
 #define OOPR_PEN_MASK   0000104

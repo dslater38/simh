@@ -1,6 +1,6 @@
 /* hp3000_defs.h: HP 3000 simulator general declarations
 
-   Copyright (c) 2016, J. David Bryan
+   Copyright (c) 2016-2017, J. David Bryan
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
@@ -23,7 +23,15 @@
    in advertising or otherwise to promote the sale, use or other dealings in
    this Software without prior written authorization from the author.
 
+   16-Oct-17    JDB     Suppressed logical-not-parentheses warning on clang
+   29-Dec-16    JDB     Changed the status mnemonic flag from REG_S to REG_T
+   20-Nov-16    JDB     Added mapped memory access classes
+   24-Oct-16    JDB     Added half-byte definitions for CIS decoding
+   10-Oct-16    JDB     Moved ACCESS_CLASS definition here from hp3000_cpu.h
+   03-Sep-16    JDB     Added the STOP_POWER and STOP_ARSINH codes
    13-May-16    JDB     Modified for revised SCP API function parameter types
+   21-Mar-16    JDB     Changed uint16 types to HP_WORD
+   19-Mar-16    JDB     Added UNDEFs for the additional register macros
    04-Feb-16    JDB     First release version
    11-Dec-12    JDB     Created
 
@@ -33,12 +41,75 @@
 
    The author gratefully acknowledges the help of Frank McConnell in answering
    questions about the HP 3000.
+
+
+   -----------------------------------------------------
+   Implementation Note -- Compiling the Simulator as C++
+   -----------------------------------------------------
+
+   Although simulators are written in C, the SIMH project encourages developers
+   to compile them with a C++ compiler to obtain the more careful type checking
+   provided.  To obtain successful compilations, the simulator must be written
+   in the subset of C that is also valid C++.  Using valid C features beyond
+   that subset, as the HP 3000 simulator does, will produce C++ compiler errors.
+
+   The standard C features used by the simulator that prevent error-free C++
+   compilation are:
+
+    1. Incomplete types.
+
+       In C, mutually recursive type definitions are allowed by the use of
+       incomplete type declarations, such as "DEVICE ms_dev;" followed later by
+       "DEVICE ms_dev {...};".  Several HP device simulators use this feature to
+       place a pointer to the device structure in the "desc" field of an MTAB
+       array element, typically when the associated validation or display
+       routine handles multiple devices.  As the DEVICE contains a pointer to
+       the MTAB array, and an MTAB array element contains a pointer to the
+       DEVICE, the definitions are mutually recursive, and incomplete types are
+       employed.  C++ does not permit incomplete types.
+
+    2. Implicit conversion of ints to enums.
+
+       In C, enumeration types are compatible with integer types, and its
+       members are constants having type "int".  As such, they are semantically
+       equivalent to and may be used interchangeably with integers.  For the
+       developer, though, C enumerations have some advantages.  In particular,
+       the compiler may check a "switch" statement to ensure that all of the
+       enumeration cases are covered.  Also, a mathematical set may be modeled
+       by an enumeration type with disjoint enumerator values, with the bitwise
+       integer OR and AND operators modeling the set union and intersection
+       operations.  The latter has direct support in the "gdb" debugger, which
+       will display an enumerated type value as a union of the various
+       enumerators.  The HP simulator makes extensive use of both features to
+       model hardware signal buses (e.g., INBOUND_SET, OUTBOUND_SET) and so
+       performs bitwise integer operations on the enumerations to model signal
+       assertion and denial.  In C++, implicit conversion from enumerations to
+       integers is allowed, but conversion from integers to enumerations is
+       illegal without explicit casts.  Therefore, the idiom employed by the
+       simulator to assert a signal (e.g., "outbound_signals |= INTREQ") is
+       rejected by the C++ compiler.
+
+    3. Implicit increment operations on enums.
+
+       Because enums are compatible with integers in C, no special enumerator
+       increment operator is provided.  To cycle through the range of an
+       enumeration type, e.g. in a "for" statement, the standard integer
+       increment operator, "++", is used.  In C++, the "++" operator must be
+       overloaded with a version specific to the enumeration type; applying the
+       integer "++" to an enumeration is illegal.
+
+    4. Use of C++ keywords as variable names.
+
+       C++ reserves a number of additional keywords beyond those reserved by C.
+       Use of any of these keywords as a variable or type name is legal C but
+       illegal C++.  The HP simulator uses variables named "class" and
+       "operator", which are keywords in C++.
+
+   The HP simulator is written in ISO standard C and will compile cleanly with a
+   compiler implementing the 1999 C standard.  Compilation as C++ is not a goal
+   of the simulator and cannot work, given the incompatibilities listed above.
 */
 
-
-
-#ifndef HP3000_DEFS_H_
-#define HP3000_DEFS_H_
 
 
 #include "sim_rev.h"
@@ -64,6 +135,7 @@
 */
 
 #if defined (__clang__)
+  #pragma clang diagnostic ignored "-Wlogical-not-parentheses"
   #pragma clang diagnostic ignored "-Wlogical-op-parentheses"
   #pragma clang diagnostic ignored "-Wbitwise-op-parentheses"
   #pragma clang diagnostic ignored "-Wshift-op-parentheses"
@@ -71,15 +143,18 @@
 
 #elif defined (_MSC_VER)
   #pragma warning (disable: 4114 4554 4996)
+
 #endif
 
 
 /* Device register display mode flags */
 
-#define REG_A               (1 << REG_V_UF + 0)         /* permit any display */
-#define REG_B               (1 << REG_V_UF + 1)         /* permit binary display */
-#define REG_M               (1 << REG_V_UF + 2)         /* default to instruction mnemonic display */
-#define REG_S               (1 << REG_V_UF + 3)         /* default to status mnemonic display */
+#define REG_X               REG_VMIO                    /* permit symbolic display overrides */
+
+#define REG_A               (1u << REG_V_UF + 0)        /* default format is -A (one ASCII character) */
+#define REG_C               (1u << REG_V_UF + 1)        /* default format is -C (two ASCII characters) */
+#define REG_M               (1u << REG_V_UF + 2)        /* default format is -M (mnemonic) */
+#define REG_T               (1u << REG_V_UF + 3)        /* default format is -T (status mnemonic) */
 
 
 /* Register macros.
@@ -90,12 +165,12 @@
      SRDATA -- an array of bytes large enough to hold a structure
      YRDATA -- a binary register
 
-   The FBDATA macro defines flag bits that are replicated in the same place in
-   each element of an array; the array element size is assumed to be the minimum
-   necessary to hold the bit at the given offset.  The SRDATA macro is used
-   solely to SAVE data stored in a structure so that it may be RESTOREd later.
-   The YRDATA macro extends the functionality of the ORDATA, DRDATA, and HRDATA
-   macros to registers with binary (base 2) representation.
+   The FBDATA macro defines a flag that is replicated in the same bit position
+   in each element of an array; the array element size is assumed to be the
+   minimum necessary to hold the bit at the given offset.  The SRDATA macro is
+   used solely to SAVE data stored in a structure so that it may be RESTOREd
+   later.  The YRDATA macro extends the functionality of the ORDATA, DRDATA, and
+   HRDATA macros to registers with binary (base 2) representation.
 
 
    Implementation notes:
@@ -107,21 +182,41 @@
        offsets 3 and 13 cannot be used, as the first implies 8-bit elements, and
        the second implies 16-bit elements.
 
-    2. The REG structure for version 4.0 contains two extra fields that are not
-       present in 3.x versions.
+    2. The macro names are UNDEFed to avoid potential name clashes with
+       sim_def.h macros.
+
+    3. The REG structure for version 4.0 contains several fields that are not
+       present in 3.x versions.  The 4.x REGDATA macro maps to the REG strcture
+       in a field-order- and preprocessor-independent manner.  There is no
+       corresponding macro in 3.x, so we must handle standard vs. non-standard
+       preprocessor differences by creating our own REGMAP macro to handle the
+       mapping.
 */
 
-/*                Macro              name    loc    radix  width  offset    depth     desc  fields */
-/*        ----------------------     ----  -------  -----  -----  ------  ----------  ----  ------ */
+#undef FBDATA
+#undef SRDATA
+#undef YRDATA
+#undef REGMAP
+
 #if (SIM_MAJOR >= 4)
-  #define FBDATA(nm,loc,ofs,dep)     #nm,  &(loc),    2,     1,   (ofs),    (dep),    NULL,  NULL
-  #define SRDATA(nm,loc)             #nm,  &(loc),    8,     8,     0,    sizeof loc, NULL,  NULL
-  #define YRDATA(nm,loc,wid)         #nm,  &(loc),    2,   (wid),   0,        1,      NULL,  NULL
+  #define REGMAP(nm,loc,rdx,wd,off,dep,fl) \
+    REGDATA (nm, loc, rdx, wd, off, dep, NULL, NULL, fl, 0, 0)
+
+#elif defined (__STDC__) || defined (_WIN32)
+  #define REGMAP(nm,loc,rdx,wd,off,dep,fl) \
+    #nm, &(loc), (rdx), (wd), (off), (dep), (fl), 0
+
 #else
-  #define FBDATA(nm,loc,ofs,dep)     #nm,  &(loc),    2,     1,   (ofs),    (dep)
-  #define SRDATA(nm,loc)             #nm,  &(loc),    8,     8,     0,    sizeof loc
-  #define YRDATA(nm,loc,wid)         #nm,  &(loc),    2,   (wid),   0,        1
+  #define REGMAP(nm,loc,rdx,wd,off,dep,fl) \
+    "nm", &(loc), (rdx), (wd), (off), (dep), (fl), 0
+
 #endif
+
+/*              Macro                    name   loc    radix  width  offset    depth     flags */
+/*      -------------------------        ----  ------  -----  -----  ------  ----------  ----- */
+#define FBDATA(nm,loc,ofs,dep,fl) REGMAP (nm,  (loc),    2,     1,   (ofs),    (dep),    (fl)  )
+#define SRDATA(nm,loc,fl)         REGMAP (nm,  (loc),    8,     8,     0,    sizeof loc, (fl)  )
+#define YRDATA(nm,loc,wid,fl)     REGMAP (nm,  (loc),    2,   (wid),   0,        1,      (fl)  )
 
 
 /* Debugging and console output.
@@ -173,21 +268,24 @@
               printf (__VA_ARGS__); \
               if (sim_log) \
                   fprintf (sim_log, __VA_ARGS__); \
-          } while (0)
+              } \
+          while (0)
 
 #define cputs(str) \
           do { \
               fputs (str, stdout); \
               if (sim_log) \
                   fputs (str, sim_log); \
-          } while (0)
+              } \
+          while (0)
 
 #define cputc(ch) \
           do { \
               putc (ch); \
               if (sim_log) \
                   fputc (ch, sim_log); \
-          } while (0)
+              } \
+          while (0)
 
 
 /* Simulation stop codes.
@@ -216,6 +314,8 @@
 #define STOP_INFLOOP        7                   /* infinite loop stop */
 #define STOP_CLOAD          8                   /* cold load complete */
 #define STOP_CDUMP          9                   /* cold dump complete */
+#define STOP_ARSINH         10                  /* auto-restart inhibited */
+#define STOP_POWER          11                  /* power is off */
 
 
 /* Modifier validation identifiers */
@@ -260,13 +360,17 @@
    simulator.  In addition, masks for 16-bit and 32-bit overflow are defined (an
    overflow is indicated if the masked bits are not all ones or all zeros).
 
+   The HP_WORD type is used to declare variables that represent 16-bit registers
+   or buses in hardware.
+
 
    Implementation notes:
 
     1. The HP_WORD type is a 32-bit unsigned type, instead of the more logical
-       16-bit unsigned type.  This is because IA-32 processors execute
-       instructions with 32-bit operands much faster than those with 16-bit
-       operands.
+       16-bit unsigned type.  There are two reasons for this.  First, SCP
+       requires that scalars referenced by REG (register) entries be 32 bits in
+       size.  Second, IA-32 processors execute instructions with 32-bit operands
+       much faster than those with 16-bit operands.
 
        Using 16-bit operands omits the masking required for 32-bit values.  For
        example, the code generated for the following operations is as follows:
@@ -295,9 +399,12 @@
        HP 3000 memory diagnostic to run about 10% slower.
 */
 
-#define HP_WORD             uint32                      /* HP 16-bit word representation */
+typedef uint32              HP_WORD;                    /* HP 16-bit data word representation */
 
 #define R_MASK              0177777u                    /* 16-bit register mask */
+
+#define D4_WIDTH            4                           /* 4-bit data bit width */
+#define D4_MASK             0017u                       /* 4-bit data mask */
 
 #define D8_WIDTH            8                           /* 8-bit data bit width */
 #define D8_MASK             0377u                       /* 8-bit data mask */
@@ -343,23 +450,23 @@
 
 /* Memory constants */
 
-#define LA_WIDTH            16                          /* logical address bit width */
-#define LA_MASK             ((1 << LA_WIDTH) - 1)       /* logical address mask (2 ** 16 - 1) */
-#define LA_MAX              ((1 << LA_WIDTH) - 1)       /* logical address maximum (2 ** 16 - 1) */
+#define LA_WIDTH            16                              /* logical address bit width */
+#define LA_MASK             ((1u << LA_WIDTH) - 1)          /* logical address mask (2 ** 16 - 1) */
+#define LA_MAX              ((1u << LA_WIDTH) - 1)          /* logical address maximum (2 ** 16 - 1) */
 
-#define BA_WIDTH            4                           /* bank address bit width */
-#define BA_MASK             ((1 << BA_WIDTH) - 1)       /* bank address mask (2 ** 4 - 1) */
-#define BA_MAX              ((1 << BA_WIDTH) - 1)       /* bank address maximum (2 ** 4 - 1) */
+#define BA_WIDTH            4                               /* bank address bit width */
+#define BA_MASK             ((1u << BA_WIDTH) - 1)          /* bank address mask (2 ** 4 - 1) */
+#define BA_MAX              ((1u << BA_WIDTH) - 1)          /* bank address maximum (2 ** 4 - 1) */
 
-#define PA_WIDTH            (LA_WIDTH + BA_WIDTH)       /* physical address bit width */
-#define PA_MASK             ((1 << PA_WIDTH) - 1)       /* physical address mask (2 ** 20 - 1) */
-#define PA_MAX              ((1 << PA_WIDTH) - 1)       /* physical address maximum (2 ** 20 - 1) */
+#define PA_WIDTH            (LA_WIDTH + BA_WIDTH)           /* physical address bit width */
+#define PA_MASK             ((1u << PA_WIDTH) - 1)          /* physical address mask (2 ** 20 - 1) */
+#define PA_MAX              ((1u << PA_WIDTH) - 1)          /* physical address maximum (2 ** 20 - 1) */
 
-#define DV_WIDTH            16                          /* data value bit width */
-#define DV_MASK             ((1 << DV_WIDTH) - 1)       /* data value mask (2 ** 16 - 1) */
-#define DV_SIGN             (1 << (DV_WIDTH - 1))       /* data value sign (2 ** 15) */
-#define DV_UMAX             ((1 << DV_WIDTH) - 1)       /* data value unsigned maximum (2 ** 16 - 1) */
-#define DV_SMAX             ((1 << (DV_WIDTH - 1)) - 1) /* data value signed maximum  (2 ** 15 - 1) */
+#define DV_WIDTH            16                              /* data value bit width */
+#define DV_MASK             ((1u << DV_WIDTH) - 1)          /* data value mask (2 ** 16 - 1) */
+#define DV_SIGN             ( 1u << (DV_WIDTH - 1))         /* data value sign (2 ** 15) */
+#define DV_UMAX             ((1u << DV_WIDTH) - 1)          /* data value unsigned maximum (2 ** 16 - 1) */
+#define DV_SMAX             ((1u << (DV_WIDTH - 1)) - 1)    /* data value signed maximum  (2 ** 15 - 1) */
 
 
 /* Memory address macros.
@@ -372,16 +479,77 @@
      - TO_OFFSET -- extract the offset part of a physical address
 
 
-  Implementation notes:
+   Implementation notes:
 
-   1. The TO_PA offset parameter is not masked to 16 bits, as this value is
-      almost always derived from a value that is inherently 16 bits in size.  In
-      the few cases where it is not, explicit masking is required.
+    1. The TO_PA offset parameter is not masked to 16 bits, as this value is
+       almost always derived from a value that is inherently 16 bits in size.
+       In the few cases where it is not, explicit masking is required.
 */
 
 #define TO_PA(b,o)          (((uint32) (b) & BA_MASK) << LA_WIDTH | (uint32) (o))
 #define TO_BANK(p)          ((p) >> LA_WIDTH & BA_MASK)
 #define TO_OFFSET(p)        ((p) & LA_MASK)
+
+
+/* Memory access classifications.
+
+   The access classification determines which bank register is used with the
+   supplied offset to access memory, whether or not the access is bounds
+   checked, and whether or not the access is mapped to the TOS registers if the
+   address is between SM and SM + SR.
+
+   Bounds checking is optionally performed on program (including instruction
+   fetch), data, and stack accesses when not in privileged mode.  Absolute
+   addresses are always accessed in privileged mode, so bounds checking is never
+   performed.
+
+   If the memory address lies between SM and SM + SR within the stack bank, then
+   access to the TOS registers may be substituted for access to memory.
+   Register mapping is always performed on stack accesses, optionally performed
+   on absolute and data accesses, and is never performed on program (and fetch)
+   accesses.
+
+   To summarize bounds checking and TOS register mapping:
+
+               Bounds    TOS
+     Access    Check   Mapping
+     --------  ------  -------
+     absolute    N        O
+     fetch       O        N
+     program     O        N
+     data        O        O
+     stack       O        Y
+     dma         N        N
+
+
+   Implementation notes:
+
+    1. The enumeration values must be ordered such that the "checked" classes
+       are odd and differ from their corresponding "unchecked" classes only in
+       the LSBs.
+
+    2. There is no hardware DMA bank register.  The "dma" class exists only to
+       differentiate DMA memory accesses from CPU memory accesses when tracing.
+*/
+
+typedef enum {
+    absolute,                                   /* absolute bank */
+    absolute_mapped,                            /* absolute bank, TOS registers mapped */
+    fetch,                                      /* program bank, instruction fetch */
+    fetch_checked,                              /* program bank, instruction fetch, bounds checked */
+    program,                                    /* program bank, data access */
+    program_checked,                            /* program bank, data access, bounds checked */
+    data,                                       /* data bank, data access */
+    data_checked,                               /* data bank, data access, bounds checked */
+    data_mapped,                                /* data bank, data or TOS register access */
+    data_mapped_checked,                        /* data bank, data or TOS register access, bounds checked */
+    stack,                                      /* stack bank, data or TOS register access */
+    stack_checked,                              /* stack bank, data or TOS register access, bounds checked */
+    dma                                         /* DMA bank */
+    } ACCESS_CLASS;
+
+#define UNCHECKED(c)        ((c) & ~1u)         /* reclassify a request as unchecked */
+#define INVERT_CHECK(c)     ((c) ^ 1u)          /* convert checked to unchecked and vice versa */
 
 
 /* Portable conversions.
@@ -398,11 +566,13 @@
 
    The conversions available are:
 
-     - SEXT  -- int16 sign-extended to int32
-     - NEG16 -- int16 negated
-     - NEG32 -- int32 negated
-     - INT16 -- uint16 to int16
-     - INT32 -- uint32 to int32
+     - SEXT8  -- int8 sign-extended to int32
+     - SEXT16 -- int16 sign-extended to int32
+     - NEG16  -- int8 negated
+     - NEG16  -- int16 negated
+     - NEG32  -- int32 negated
+     - INT16  -- uint16 to int16
+     - INT32  -- uint32 to int32
 
 
    Implementation notes:
@@ -411,13 +581,21 @@
        before invoking.
 */
 
-#define SEXT(x)         (int32) ((x) & D16_SIGN ? (x) | ~D16_MASK : (x))
+#define SEXT8(x)        (int32) ((x) & D8_SIGN  ? (x) | ~D8_MASK  : (x))
+#define SEXT16(x)       (int32) ((x) & D16_SIGN ? (x) | ~D16_MASK : (x))
 
+#define NEG8(x)         ((~(x) + 1) & D8_MASK)
 #define NEG16(x)        ((~(x) + 1) & D16_MASK)
 #define NEG32(x)        ((~(x) + 1) & D32_MASK)
 
 #define INT16(u)        ((u) > D16_SMAX ? (-(int16) (D16_UMAX - (u)) - 1) : (int16) (u))
 #define INT32(u)        ((u) > D32_SMAX ? (-(int32) (D32_UMAX - (u)) - 1) : (int32) (u))
+
+
+/* Half-byte accessors */
+
+#define UPPER_HALF(b)       ((b) >> D4_WIDTH & D4_MASK)
+#define LOWER_HALF(b)       ((b) & D4_MASK)
 
 
 /* Byte accessors.
@@ -465,9 +643,9 @@ typedef enum {
     SET   = 1                                   /* the flip-flop is set */
     } FLIP_FLOP;
 
-#define TOGGLE(ff)          ff = (ff ^ 1)       /* toggle a flip-flop variable */
+#define TOGGLE(ff)          ff = (FLIP_FLOP) (ff ^ 1)   /* toggle a flip-flop variable */
 
-#define D_FF(b)             ((b) != 0)          /* use a Boolean expression for a D flip-flop */
+#define D_FF(b)             (FLIP_FLOP) ((b) != 0)      /* use a Boolean expression for a D flip-flop */
 
 
 /* Bitset formatting.
@@ -511,14 +689,14 @@ typedef struct {                                /* bit set format descriptor */
 
 /* System interface global data structures */
 
-extern const uint16 odd_parity [256];           /* a table of parity bits for odd parity */
+extern const HP_WORD odd_parity [256];          /* a table of parity bits for odd parity */
 
 extern const BITSET_FORMAT inbound_format;      /* the inbound signal format structure */
 extern const BITSET_FORMAT outbound_format;     /* the outbound signal format structure */
 
 
-/* System interface global SCP support routines previously declared in scp.h */
-/*
+/* System interface global SCP support routines declared in scp.h
+
 extern t_stat sim_load   (FILE       *fptr,  CONST char *cptr, CONST char *fnam, int     flag);
 extern t_stat fprint_sym (FILE       *ofile, t_addr     addr,  t_value    *val,  UNIT    *uptr, int32 sw);
 extern t_stat parse_sym  (CONST char *cptr,  t_addr     addr,  UNIT       *uptr, t_value *val,  int32 sw);
@@ -532,14 +710,12 @@ extern t_stat hp_show_dib (FILE *st,   UNIT  *uptr, int32      code,  CONST void
 
 /* System interface global utility routines */
 
-extern t_bool hp_device_conflict (void);
-extern t_stat fprint_cpu         (FILE *ofile, t_value *val, uint32 radix, int32 switches);
+extern t_stat fprint_cpu  (FILE *ofile, t_value *val, uint32 radix, int32  switches);
+extern uint32 fprint_edit (FILE *ofile, t_value *val, uint32 radix, uint32 byte_address);
 
 extern const char *fmt_status (uint32 status);
 extern const char *fmt_char   (uint32 charval);
 extern const char *fmt_bitset (uint32 bitset, const BITSET_FORMAT bitfmt);
 
-extern void hp_debug (DEVICE *dptr, uint32 flag, ...);
-
-
-#endif
+extern void   hp_debug           (DEVICE *dptr, uint32 flag, ...);
+extern t_bool hp_device_conflict (void);

@@ -1,6 +1,6 @@
 /* hp3000_atc.c: HP 3000 30032B Asynchronous Terminal Controller simulator
 
-   Copyright (c) 2014-2016, J. David Bryan
+   Copyright (c) 2014-2017, J. David Bryan
    Copyright (c) 2002-2012, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -26,7 +26,18 @@
 
    ATCD,ATCC    HP 30032B Asynchronous Terminal Controller
 
+   18-Dec-17    JDB     Return event time instead of status from "activate_unit"
+   11-Dec-17    JDB     Reschedule "line_service" if receive buffer has data
+   26-Oct-17    JDB     Call "tmxr_poll_tx" if transmit buffer is full
+   05-Sep-17    JDB     Changed REG_A (permit any symbolic override) to REG_X
+   16-Sep-16    JDB     Fixed atcd_detach to skip channel cancel if SIM_SW_REST
+   12-Sep-16    JDB     Changed DIB register macro usage from SRDATA to DIB_REG
+   20-Jul-16    JDB     Corrected poll_unit "wait" field initializer.
+   26-Jun-16    JDB     Removed tmxr_set_modem_control_passthru call in atcc_reset
+   09-Jun-16    JDB     Added casts for ptrdiff_t to int32 values
+   16-May-16    JDB     Fixed interrupt mask setting
    13-May-16    JDB     Modified for revised SCP API function parameter types
+   21-Mar-16    JDB     Changed uint16 types to HP_WORD
    26-Aug-15    JDB     First release version
    31-Jul-15    JDB     Passes the terminal control diagnostic (D438A)
    11-Aug-14    JDB     Passes the terminal data diagnostic (D427A)
@@ -315,7 +326,7 @@
 #define NUL                 '\000'              /* null */
 #define ENQ                 '\005'              /* enquire */
 #define ACK                 '\006'              /* acknowledge */
-#define ASCII_MASK          000177              /* 7-bit ASCII character set mask */
+#define ASCII_MASK          000177u             /* 7-bit ASCII character set mask */
 
 #define GEN_ACK             (TMXR_VALID | SCPE_KFLAG | ACK) /* a generated ACK character */
 
@@ -330,14 +341,14 @@
 
 /* Debug flags */
 
-#define DEB_CSRW            (1 << 0)            /* trace command initiations and completions */
-#define DEB_XFER            (1 << 1)            /* trace data receptions and transmissions */
-#define DEB_IOB             (1 << 2)            /* trace I/O bus signals and data words */
-#define DEB_SERV            (1 << 3)            /* trace channel service scheduling calls */
-#define DEB_PSERV           (1 << 4)            /* trace poll service scheduling calls */
+#define DEB_CSRW            (1u << 0)           /* trace command initiations and completions */
+#define DEB_XFER            (1u << 1)           /* trace data receptions and transmissions */
+#define DEB_IOB             (1u << 2)           /* trace I/O bus signals and data words */
+#define DEB_SERV            (1u << 3)           /* trace channel service scheduling calls */
+#define DEB_PSERV           (1u << 4)           /* trace poll service scheduling calls */
 
 
-/* Per-unit state */
+/* Common per-unit multiplexer channel state variables */
 
 #define recv_time           u3                  /* realistic receive time in event ticks */
 #define send_time           u4                  /* realistic send time in event ticks */
@@ -349,8 +360,8 @@
 #define DEV_DIAG_SHIFT      (DEV_V_UF + 0)              /* diagnostic loopback */
 #define DEV_REALTIME_SHIFT  (DEV_V_UF + 1)              /* timing mode is realistic */
 
-#define DEV_DIAG            (1 << DEV_DIAG_SHIFT)       /* diagnostic mode flag */
-#define DEV_REALTIME        (1 << DEV_REALTIME_SHIFT)   /* realistic timing flag */
+#define DEV_DIAG            (1u << DEV_DIAG_SHIFT)      /* diagnostic mode flag */
+#define DEV_REALTIME        (1u << DEV_REALTIME_SHIFT)  /* realistic timing flag */
 
 
 /* Unit flags */
@@ -359,9 +370,9 @@
 #define UNIT_LOCALACK_SHIFT (TTUF_V_UF + 1)             /* local ACK mode */
 #define UNIT_MODEM_SHIFT    (TTUF_V_UF + 2)             /* modem control */
 
-#define UNIT_CAPSLOCK       (1 << UNIT_CAPSLOCK_SHIFT)  /* caps lock is down flag */
-#define UNIT_LOCALACK       (1 << UNIT_LOCALACK_SHIFT)  /* ENQ/ACK mode is local flag */
-#define UNIT_MODEM          (1 << UNIT_MODEM_SHIFT)     /* channel connects to a data set flag */
+#define UNIT_CAPSLOCK       (1u << UNIT_CAPSLOCK_SHIFT) /* caps lock is down flag */
+#define UNIT_LOCALACK       (1u << UNIT_LOCALACK_SHIFT) /* ENQ/ACK mode is local flag */
+#define UNIT_MODEM          (1u << UNIT_MODEM_SHIFT)    /* channel connects to a data set flag */
 
 
 /* Unit references */
@@ -388,11 +399,11 @@ typedef enum {
      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 */
 
-#define DCN_MR              0100000             /* (M) master reset */
-#define DCN_IRQ_RESET       0040000             /* (R) interrupt request reset */
-#define DCN_CHAN_MASK       0037000             /* channel number mask */
-#define DCN_ENABLE          0000002             /* (E) enable store of preceding data or parameter word */
-#define DCN_ACKN            0000001             /* (A) acknowledge interrupt */
+#define DCN_MR              0100000u            /* (M) master reset */
+#define DCN_IRQ_RESET       0040000u            /* (R) interrupt request reset */
+#define DCN_CHAN_MASK       0037000u            /* channel number mask */
+#define DCN_ENABLE          0000002u            /* (E) enable store of preceding data or parameter word */
+#define DCN_ACKN            0000001u            /* (A) acknowledge interrupt */
 
 #define DCN_CHAN_SHIFT      9                   /* channel number alignment shift */
 
@@ -429,13 +440,13 @@ static const BITSET_FORMAT tdi_control_format =         /* names, offset, direct
      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 */
 
-#define DST_DIO_OK          0040000             /* (D) direct I/O OK to use */
-#define DST_IRQ             0020000             /* (I) interrupt requested */
-#define DST_COMPLETE        0004000             /* (C) operation is complete and channel is ready to interrupt */
-#define DST_SEND_IRQ        0002000             /* (R) interrupt request is for character sent */
-#define DST_CHAR_LOST       0001000             /* (L) character was lost */
-#define DST_BREAK           0000400             /* (B) break occurred */
-#define DST_DIAGNOSE        0000000             /* status is from an auxiliary channel (not used on ATC) */
+#define DST_DIO_OK          0040000u            /* (D) direct I/O OK to use */
+#define DST_IRQ             0020000u            /* (I) interrupt requested */
+#define DST_COMPLETE        0004000u            /* (C) operation is complete and channel is ready to interrupt */
+#define DST_SEND_IRQ        0002000u            /* (R) interrupt request is for character sent */
+#define DST_CHAR_LOST       0001000u            /* (L) character was lost */
+#define DST_BREAK           0000400u            /* (B) break occurred */
+#define DST_DIAGNOSE        0000000u            /* status is from an auxiliary channel (not used on ATC) */
 
 #define DST_CHAN(n)         0                   /* position channel number for status (not used on ATC) */
 
@@ -480,14 +491,14 @@ static const BITSET_FORMAT tdi_status_format =          /* names, offset, direct
    the number of stop bits from the receive parameter word.
 */
 
-#define DPI_IS_PARAM        0100000             /* value is a parameter (always set) */
-#define DPI_IS_SEND         0040000             /* (R) value is a send parameter */
-#define DPI_ENABLE_IRQ      0020000             /* (I) enable interrupt requests */
-#define DPI_ENABLE_PARITY   0010000             /* (E) enable parity for send */
-#define DPI_ENABLE_ECHO     0010000             /* (E) enable echo for receive */
-#define DPI_DIAGNOSE        0004000             /* (D) connect to the auxiliary channels */
-#define DPI_SIZE_MASK       0003400             /* character size mask */
-#define DPI_RATE_MASK       0000377             /* baud rate mask */
+#define DPI_IS_PARAM        0100000u            /* value is a parameter (always set) */
+#define DPI_IS_SEND         0040000u            /* (R) value is a send parameter */
+#define DPI_ENABLE_IRQ      0020000u            /* (I) enable interrupt requests */
+#define DPI_ENABLE_PARITY   0010000u            /* (E) enable parity for send */
+#define DPI_ENABLE_ECHO     0010000u            /* (E) enable echo for receive */
+#define DPI_DIAGNOSE        0004000u            /* (D) connect to the auxiliary channels */
+#define DPI_SIZE_MASK       0003400u            /* character size mask */
+#define DPI_RATE_MASK       0000377u            /* baud rate mask */
 
 #define DPI_CHAR_CONFIG     (DPI_SIZE_MASK | DPI_RATE_MASK) /* character configuration data */
 
@@ -499,7 +510,7 @@ static const BITSET_FORMAT tdi_status_format =          /* names, offset, direct
 
 #define BAUD_RATE(p)        ((28800 / (DPI_BAUD_RATE (p) + 1) + 1) / 2)
 
-#define PAD_BITS(c)         (~((1 << bits_per_char [DPI_CHAR_SIZE (c)] - 2) - 1))
+#define PAD_BITS(c)         (~((1u << bits_per_char [DPI_CHAR_SIZE (c)] - 2) - 1))
 
 
 static const uint32 bits_per_char [8] = {       /* bits per character, indexed by DPI_CHAR_SIZE encoding */
@@ -525,10 +536,10 @@ static const BITSET_FORMAT tdi_parameter_format =       /* names, offset, direct
      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 */
 
-#define DDS_IS_SEND         0040000             /* value is a send data word (always set) */
-#define DDS_SYNC            0004000             /* (S) sync */
-#define DDS_DATA_MASK       0003777             /* data value mask */
-#define DDS_PARITY          0000200             /* data parity bit */
+#define DDS_IS_SEND         0040000u            /* value is a send data word (always set) */
+#define DDS_SYNC            0004000u            /* (S) sync */
+#define DDS_DATA_MASK       0003777u            /* data value mask */
+#define DDS_PARITY          0000200u            /* data parity bit */
 
 #define DDS_MARK            (DDS_SYNC | DDS_DATA_MASK)  /* all-mark character */
 
@@ -554,9 +565,9 @@ static const BITSET_FORMAT tdi_output_data_format =     /* names, offset, direct
      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 */
 
-#define DDR_CHAN_MASK       0174000             /* channel number mask */
-#define DDR_PARITY          0002000             /* (P) computed parity bit */
-#define DDR_DATA_MASK       0001777             /* data value mask */
+#define DDR_CHAN_MASK       0174000u            /* channel number mask */
+#define DDR_PARITY          0002000u            /* (P) computed parity bit */
+#define DDR_DATA_MASK       0001777u            /* data value mask */
 
 #define DDR_CHAN_SHIFT      11                  /* channel number alignment shift */
 #define DDR_DATA_SHIFT      0                   /* data alignment shift */
@@ -584,24 +595,24 @@ static const BITSET_FORMAT tdi_input_data_format =      /* names, offset, direct
      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 */
 
-#define CCN_MR              0100000             /* (M) master reset */
-#define CCN_IRQ_RESET       0040000             /* (R) interrupt request reset */
-#define CCN_SCAN            0020000             /* (S) scan enable */
-#define CCN_UPDATE          0010000             /* (U) update enable */
-#define CCN_CHAN_MASK       0007400             /* channel number mask */
-#define CCN_ECX_MASK        0000300             /* control output enable mask */
-#define CCN_EC2             0000200             /* (W) C2 output enable */
-#define CCN_EC1             0000100             /* (X) C1 output enable */
-#define CCN_CX_MASK         0000060             /* output mask */
-#define CCN_C2              0000040             /* (Q) C2 output [RTS] */
-#define CCN_C1              0000020             /* (T) C1 output [DTR] */
-#define CCN_STAT_MASK       0000017             /* status RAM mask */
-#define CCN_ESX_MASK        0000014             /* status interrupt enable mask */
-#define CCN_ES2             0000010             /* (Y) S2 interrupt enable */
-#define CCN_ES1             0000004             /* (Z) S1 interrupt enable */
-#define CCN_SX_MASK         0000003             /* status mask */
-#define CCN_S2              0000002             /* (C) S2 status [DCD]*/
-#define CCN_S1              0000001             /* (D) S1 status [DSR] */
+#define CCN_MR              0100000u            /* (M) master reset */
+#define CCN_IRQ_RESET       0040000u            /* (R) interrupt request reset */
+#define CCN_SCAN            0020000u            /* (S) scan enable */
+#define CCN_UPDATE          0010000u            /* (U) update enable */
+#define CCN_CHAN_MASK       0007400u            /* channel number mask */
+#define CCN_ECX_MASK        0000300u            /* control output enable mask */
+#define CCN_EC2             0000200u            /* (W) C2 output enable */
+#define CCN_EC1             0000100u            /* (X) C1 output enable */
+#define CCN_CX_MASK         0000060u            /* output mask */
+#define CCN_C2              0000040u            /* (Q) C2 output [RTS] */
+#define CCN_C1              0000020u            /* (T) C1 output [DTR] */
+#define CCN_STAT_MASK       0000017u            /* status RAM mask */
+#define CCN_ESX_MASK        0000014u            /* status interrupt enable mask */
+#define CCN_ES2             0000010u            /* (Y) S2 interrupt enable */
+#define CCN_ES1             0000004u            /* (Z) S1 interrupt enable */
+#define CCN_SX_MASK         0000003u            /* status mask */
+#define CCN_S2              0000002u            /* (C) S2 status [DCD]*/
+#define CCN_S1              0000001u            /* (D) S1 status [DSR] */
 
 #define CCN_CHAN_SHIFT      8                   /* channel number alignment shift */
 #define CCN_CX_SHIFT        4                   /* control alignment shift */
@@ -644,19 +655,19 @@ static const BITSET_FORMAT tci_control_format =         /* names, offset, direct
      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 */
 
-#define CST_DIO_OK          0040000             /* direct I/O OK to use (always set) */
-#define CST_IRQ             0020000             /* (I) interrupt request */
-#define CST_ON              0010000             /* (always set) */
-#define CST_CHAN_MASK       0007400             /* channel number mask */
-#define CST_IX_MASK         0000060             /* status interrupt mask */
-#define CST_I2              0000040             /* (J) S2 interrupt */
-#define CST_I1              0000020             /* (K) S1 interrupt */
-#define CST_ESX_MASK        0000014             /* status interrupt enable mask */
-#define CST_ES2             0000010             /* (Y) S2 interrupt enable */
-#define CST_ES1             0000004             /* (Z) S1 interrupt enable */
-#define CST_SX_MASK         0000003             /* status mask */
-#define CST_S2              0000002             /* (C) S2 status [DCD] */
-#define CST_S1              0000001             /* (D) S1 status [DSR] */
+#define CST_DIO_OK          0040000u            /* direct I/O OK to use (always set) */
+#define CST_IRQ             0020000u            /* (I) interrupt request */
+#define CST_ON              0010000u            /* (always set) */
+#define CST_CHAN_MASK       0007400u            /* channel number mask */
+#define CST_IX_MASK         0000060u            /* status interrupt mask */
+#define CST_I2              0000040u            /* (J) S2 interrupt */
+#define CST_I1              0000020u            /* (K) S1 interrupt */
+#define CST_ESX_MASK        0000014u            /* status interrupt enable mask */
+#define CST_ES2             0000010u            /* (Y) S2 interrupt enable */
+#define CST_ES1             0000004u            /* (Z) S1 interrupt enable */
+#define CST_SX_MASK         0000003u            /* status mask */
+#define CST_S2              0000002u            /* (C) S2 status [DCD] */
+#define CST_S1              0000001u            /* (D) S1 status [DSR] */
 
 #define CST_CHAN_SHIFT      8                   /* channel number alignment shift */
 #define CST_IX_SHIFT        4                   /* status interrupt alignment shift */
@@ -712,12 +723,12 @@ t_bool atc_is_polling = TRUE;                   /* TRUE if the ATC is polling fo
 
 /* TDI interface state */
 
-static uint16 tdi_control_word = 0;             /* control word */
-static uint16 tdi_status_word  = 0;             /* status word */
-static uint16 tdi_read_word    = 0;             /* read word */
-static uint16 tdi_write_word   = 0;             /* write word */
+static HP_WORD tdi_control_word = 0;            /* control word */
+static HP_WORD tdi_status_word  = 0;            /* status word */
+static HP_WORD tdi_read_word    = 0;            /* read word */
+static HP_WORD tdi_write_word   = 0;            /* write word */
 
-static FLIP_FLOP tdi_interrupt_mask = CLEAR;    /* interrupt mask flip-flop */
+static FLIP_FLOP tdi_interrupt_mask = SET;      /* interrupt mask flip-flop */
 static FLIP_FLOP tdi_data_flag      = CLEAR;    /* data flag */
 
 static int32 fast_data_time = FAST_IO_TIME;     /* fast receive/send time */
@@ -725,22 +736,22 @@ static int32 fast_data_time = FAST_IO_TIME;     /* fast receive/send time */
 
 /* TDI per-channel state */
 
-static uint16 recv_status [RECV_CHAN_COUNT];    /* receive status words */
-static uint16 recv_param  [RECV_CHAN_COUNT];    /* receive parameter words */
-static uint16 recv_buffer [RECV_CHAN_COUNT];    /* receive character buffers */
+static HP_WORD recv_status [RECV_CHAN_COUNT];   /* receive status words */
+static HP_WORD recv_param  [RECV_CHAN_COUNT];   /* receive parameter words */
+static HP_WORD recv_buffer [RECV_CHAN_COUNT];   /* receive character buffers */
 
-static uint16 send_status [SEND_CHAN_COUNT];    /* send status words */
-static uint16 send_param  [SEND_CHAN_COUNT];    /* send parameter words */
-static uint16 send_buffer [SEND_CHAN_COUNT];    /* send character buffers */
+static HP_WORD send_status [SEND_CHAN_COUNT];   /* send status words */
+static HP_WORD send_param  [SEND_CHAN_COUNT];   /* send parameter words */
+static HP_WORD send_buffer [SEND_CHAN_COUNT];   /* send character buffers */
 
 
 /* TCI interface state */
 
-static uint16 tci_control_word = 0;             /* control word */
-static uint16 tci_status_word  = 0;             /* status word */
-static uint32 tci_cntr         = 0;             /* channel counter */
+static HP_WORD tci_control_word = 0;            /* control word */
+static HP_WORD tci_status_word  = 0;            /* status word */
+static uint32  tci_cntr         = 0;            /* channel counter */
 
-static FLIP_FLOP tci_interrupt_mask = CLEAR;    /* interrupt mask flip-flop */
+static FLIP_FLOP tci_interrupt_mask = SET;      /* interrupt mask flip-flop */
 static FLIP_FLOP tci_scan           = CLEAR;    /* scanning enabled flip-flop */
 
 
@@ -773,15 +784,15 @@ static void tdi_set_interrupt (void);
 static void tdi_master_reset  (void);
 static void tci_master_reset  (void);
 
-static t_stat line_service  (UNIT  *uptr);
-static t_stat poll_service  (UNIT  *uptr);
-static t_stat activate_unit (UNIT  *uptr,    ACTIVATOR reason);
-static uint32 service_time  (uint16 control, ACTIVATOR reason);
-static void   store         (uint16 control, uint16 data);
-static void   receive       (int32  channel, int32 data, t_bool loopback);
-static void   diagnose      (uint16 control, int32 data);
-static void   scan_channels (int32  channel);
-static uint16 scan_status   (void);
+static t_stat  line_service  (UNIT    *uptr);
+static t_stat  poll_service  (UNIT    *uptr);
+static int32   activate_unit (UNIT    *uptr,   ACTIVATOR reason);
+static uint32  service_time  (HP_WORD control, ACTIVATOR reason);
+static void    store         (HP_WORD control, HP_WORD   data);
+static void    receive       (int32   channel, int32 data, t_bool loopback);
+static void    diagnose      (HP_WORD control, int32 data);
+static void    scan_channels (int32   channel);
+static HP_WORD scan_status   (void);
 
 
 /* ATC SCP data structures */
@@ -875,23 +886,23 @@ static DIB atcc_dib = {
 */
 
 static UNIT atcd_unit [UNIT_COUNT] = {
-    { UDATA (&line_service, TT_MODE_7P | UNIT_LOCALACK | UNIT_CAPSLOCK,  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0) },
-    { UDATA (&poll_service, UNIT_ATTABLE | UNIT_DIS | UNIT_IDLE, POLL_TIME) }  /* multiplexer poll unit */
+    { UDATA (&line_service, TT_MODE_7P | UNIT_LOCALACK | UNIT_CAPSLOCK,  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&line_service, TT_MODE_7B | UNIT_LOCALACK,                  0)            },
+    { UDATA (&poll_service, UNIT_ATTABLE | UNIT_DIS | UNIT_IDLE,         0), POLL_TIME }  /* multiplexer poll unit */
     };
 
 static UNIT atcc_unit [] = {                    /* a dummy unit to satisfy SCP requirements */
@@ -910,8 +921,8 @@ static UNIT atcc_unit [] = {                    /* a dummy unit to satisfy SCP r
    Implementation notes:
 
     1. The TCI control and status line register definitions use the VM-defined
-       FBDATA macro.  This macro defines a bit slice longitudinally through an
-       array.
+       FBDATA macro.  This macro defines a flag that is replicated in the same
+       bit position in each element of an array.
 */
 
 static REG atcd_reg [] = {
@@ -919,43 +930,44 @@ static REG atcd_reg [] = {
 /*    ------  ------  -------------------  -----  -----  ------  ----------------  --------------- */
     { ORDATA (CNTL,   tdi_control_word,            16),                                    REG_FIT },
     { ORDATA (STAT,   tdi_status_word,             16),                                    REG_FIT },
-    { ORDATA (READ,   tdi_read_word,               16),                            REG_A | REG_FIT },
-    { ORDATA (WRITE,  tdi_write_word,              16),                            REG_A | REG_FIT },
+    { ORDATA (READ,   tdi_read_word,               16),                            REG_X | REG_FIT },
+    { ORDATA (WRITE,  tdi_write_word,              16),                            REG_X | REG_FIT },
     { FLDATA (FLAG,   tdi_data_flag,                        0)                                     },
     { FLDATA (MASK,   tdi_interrupt_mask,                   0)                                     },
     { DRDATA (FTIME,  fast_data_time,              24),                            PV_LEFT         },
     { BRDATA (RSTAT,  recv_status,           8,    16,           RECV_CHAN_COUNT)                  },
     { BRDATA (RPARM,  recv_param,            8,    16,           RECV_CHAN_COUNT)                  },
-    { BRDATA (RBUFR,  recv_buffer,           8,    16,           RECV_CHAN_COUNT), REG_A           },
+    { BRDATA (RBUFR,  recv_buffer,           8,    16,           RECV_CHAN_COUNT), REG_X           },
     { BRDATA (SSTAT,  send_status,           8,    16,           SEND_CHAN_COUNT)                  },
     { BRDATA (SPARM,  send_param,            8,    16,           SEND_CHAN_COUNT)                  },
-    { BRDATA (SBUFR,  send_buffer,           8,    16,           SEND_CHAN_COUNT), REG_A           },
+    { BRDATA (SBUFR,  send_buffer,           8,    16,           SEND_CHAN_COUNT), REG_X           },
     { FLDATA (POLL,   atc_is_polling,                       0),                    REG_HRO         },
-    { SRDATA (DIB,    atcd_dib),                                                   REG_HRO         },
+
+      DIB_REGS (atcd_dib),
 
     { NULL }
     };
 
 static REG atcc_reg [] = {
-/*    Macro   Name    Location             Width  Offset    Depth     Flags   */
-/*    ------  ------  -------------------  -----  ------  ----------  ------- */
-    { ORDATA (CNTL,   tci_control_word,     16),                      REG_FIT },
-    { ORDATA (STAT,   tci_status_word,      16),                      REG_FIT },
-    { DRDATA (CNTR,   tci_cntr,              4)                               },
-    { FLDATA (SCAN,   tci_scan,                      0)                       },
-    { FLDATA (MASK,   tci_interrupt_mask,            0)                       },
+/*    Macro   Name    Location             Width  Offset    Depth      Flags   */
+/*    ------  ------  -------------------  -----  ------  ----------  -------  */
+    { ORDATA (CNTL,   tci_control_word,     16),                      REG_FIT  },
+    { ORDATA (STAT,   tci_status_word,      16),                      REG_FIT  },
+    { DRDATA (CNTR,   tci_cntr,              4)                                },
+    { FLDATA (SCAN,   tci_scan,                      0)                        },
+    { FLDATA (MASK,   tci_interrupt_mask,            0)                        },
 
-    { FBDATA (C2,     cntl_status,                   5,   TERM_COUNT)         },
-    { FBDATA (C1,     cntl_status,                   4,   TERM_COUNT)         },
-    { FBDATA (S2,     cntl_status,                   1,   TERM_COUNT)         },
-    { FBDATA (S1,     cntl_status,                   0,   TERM_COUNT)         },
+    { FBDATA (C2,     cntl_status,                   5,   TERM_COUNT, PV_RZRO) },
+    { FBDATA (C1,     cntl_status,                   4,   TERM_COUNT, PV_RZRO) },
+    { FBDATA (S2,     cntl_status,                   1,   TERM_COUNT, PV_RZRO) },
+    { FBDATA (S1,     cntl_status,                   0,   TERM_COUNT, PV_RZRO) },
 
-    { FBDATA (ES2,    cntl_param,                    3,   TERM_COUNT)         },
-    { FBDATA (ES1,    cntl_param,                    2,   TERM_COUNT)         },
-    { FBDATA (MS2,    cntl_param,                    1,   TERM_COUNT)         },
-    { FBDATA (MS1,    cntl_param,                    0,   TERM_COUNT)         },
+    { FBDATA (ES2,    cntl_param,                    3,   TERM_COUNT, PV_RZRO) },
+    { FBDATA (ES1,    cntl_param,                    2,   TERM_COUNT, PV_RZRO) },
+    { FBDATA (MS2,    cntl_param,                    1,   TERM_COUNT, PV_RZRO) },
+    { FBDATA (MS1,    cntl_param,                    0,   TERM_COUNT, PV_RZRO) },
 
-    { SRDATA (DIB,    atcc_dib),                                      REG_HRO },
+      DIB_REGS (atcc_dib),
 
     { NULL }
     };
@@ -1167,11 +1179,11 @@ DEVICE atcc_dev = {
        the request.
 */
 
-static SIGNALS_DATA atcd_interface (DIB *dibptr, INBOUND_SET inbound_signals, uint16 inbound_value)
+static SIGNALS_DATA atcd_interface (DIB *dibptr, INBOUND_SET inbound_signals, HP_WORD inbound_value)
 {
 INBOUND_SIGNAL signal;
 INBOUND_SET    working_set      = inbound_signals;
-uint16         outbound_value   = 0;
+HP_WORD        outbound_value   = 0;
 OUTBOUND_SET   outbound_signals = NO_SIGNALS;
 
 dprintf (atcd_dev, DEB_IOB, "Received data %06o with signals %s\n",
@@ -1184,7 +1196,7 @@ while (working_set) {                                   /* while signals remain 
 
         case DCONTSTB:
             dprintf (atcd_dev, DEB_CSRW, (inbound_value & DCN_ENABLE
-                                           ? "Control is %s | channel %d\n"
+                                           ? "Control is %s | channel %u\n"
                                            : "Control is %s\n"),
                      fmt_bitset (inbound_value, tdi_control_format),
                      DCN_CHAN (inbound_value));
@@ -1221,7 +1233,7 @@ while (working_set) {                                   /* while signals remain 
             else                                        /*     to indicate */
                 tdi_status_word &= ~DST_COMPLETE;       /*       whether or not a channel has completed */
 
-            outbound_value = (uint16) tdi_status_word;  /* return the status word */
+            outbound_value = tdi_status_word;           /* return the status word */
 
             dprintf (atcd_dev, DEB_CSRW, "Status is %s\n",
                      fmt_bitset (outbound_value, tdi_status_format));
@@ -1233,7 +1245,7 @@ while (working_set) {                                   /* while signals remain 
 
             if (DPRINTING (atcd_dev, DEB_CSRW))
                 if (inbound_value & DPI_IS_PARAM)
-                    hp_debug (&atcd_dev, DEB_CSRW, "Parameter is %s%d bits | %d baud\n",
+                    hp_debug (&atcd_dev, DEB_CSRW, "Parameter is %s%u bits | %u baud\n",
                               fmt_bitset (inbound_value, tdi_parameter_format),
                               bits_per_char [DPI_CHAR_SIZE (inbound_value)],
                               BAUD_RATE (inbound_value));
@@ -1248,7 +1260,7 @@ while (working_set) {                                   /* while signals remain 
         case DREADSTB:
             outbound_value = tdi_read_word;             /* return the data word */
 
-            dprintf (atcd_dev, DEB_CSRW, "Input data is channel %d | %s%04o\n",
+            dprintf (atcd_dev, DEB_CSRW, "Input data is channel %u | %s%04o\n",
                      DDR_TO_CHAN (outbound_value),
                      fmt_bitset (outbound_value, tdi_input_data_format),
                      DDR_TO_DATA (outbound_value));
@@ -1282,8 +1294,11 @@ while (working_set) {                                   /* while signals remain 
 
 
         case DSETMASK:
-            tdi_interrupt_mask =                                    /* set the mask flip-flop */
-               D_FF (dibptr->interrupt_mask & inbound_value);       /*   from the mask bit and the mask value */
+            if (dibptr->interrupt_mask == INTMASK_E)                /* if the mask is always enabled */
+                tdi_interrupt_mask = SET;                           /*   then set the mask flip-flop */
+            else                                                    /* otherwise */
+                tdi_interrupt_mask = D_FF (dibptr->interrupt_mask   /*   set the mask flip-flop if the mask bit */
+                                           & inbound_value);        /*     is present in the mask value */
 
             if (tdi_interrupt_mask && dibptr->interrupt_request)    /* if the mask is enabled and a request is pending */
                 outbound_signals |= INTREQ;                         /*   then assert INTREQ */
@@ -1360,11 +1375,11 @@ return IORETURN (outbound_signals, outbound_value);     /* return the outbound s
        the request.
 */
 
-static SIGNALS_DATA atcc_interface (DIB *dibptr, INBOUND_SET inbound_signals, uint16 inbound_value)
+static SIGNALS_DATA atcc_interface (DIB *dibptr, INBOUND_SET inbound_signals, HP_WORD inbound_value)
 {
 INBOUND_SIGNAL signal;
 INBOUND_SET    working_set      = inbound_signals;
-uint16         outbound_value   = 0;
+HP_WORD        outbound_value   = 0;
 OUTBOUND_SET   outbound_signals = NO_SIGNALS;
 int32          set_lines, clear_lines;
 
@@ -1379,7 +1394,7 @@ while (working_set) {                                   /* while signals remain 
         case DCONTSTB:
             tci_cntr = CCN_CHAN (inbound_value);        /* set the counter to the target channel */
 
-            dprintf (atcc_dev, DEB_CSRW, "Control is channel %d | %s\n",
+            dprintf (atcc_dev, DEB_CSRW, "Control is channel %u | %s\n",
                      tci_cntr, fmt_bitset (inbound_value, tci_control_format));
 
             tci_control_word = inbound_value;           /* save the control word */
@@ -1398,7 +1413,7 @@ while (working_set) {                                   /* while signals remain 
                                        & CCN_ECX (tci_control_word)     /*       that are enabled */
                                        & tci_control_word;              /*         in the control word */
 
-            dprintf (atcc_dev, DEB_XFER, "Channel %d line status is %s\n",
+            dprintf (atcc_dev, DEB_XFER, "Channel %u line status is %s\n",
                      tci_cntr, fmt_bitset (cntl_status [tci_cntr], tci_line_format));
 
             if (atcc_dev.flags & DEV_DIAG) {                /* if the interface is in diagnostic mode */
@@ -1406,7 +1421,7 @@ while (working_set) {                                   /* while signals remain 
                   cntl_status [tci_cntr ^ 1] & ~CCN_SX_MASK /*     back to the alternate channel */
                   | CCN_CX (cntl_status [tci_cntr]);        /*       from the selected channel */
 
-                dprintf (atcc_dev, DEB_XFER, "Channel %d line status is %s\n",
+                dprintf (atcc_dev, DEB_XFER, "Channel %u line status is %s\n",
                          tci_cntr ^ 1, fmt_bitset (cntl_status [tci_cntr ^ 1], tci_line_format));
                 }
 
@@ -1427,7 +1442,7 @@ while (working_set) {                                   /* while signals remain 
                         clear_lines |= TMXR_MDM_DTR;        /*     set it down */
 
                         if (cntl_status [tci_cntr] & DCD)    /* setting DTR down will disconnect the channel */
-                            dprintf (atcc_dev, DEB_CSRW, "Channel %d disconnected by DTR drop\n",
+                            dprintf (atcc_dev, DEB_CSRW, "Channel %u disconnected by DTR drop\n",
                                      tci_cntr);
                         }
 
@@ -1458,9 +1473,9 @@ while (working_set) {                                   /* while signals remain 
             if (dibptr->interrupt_request == SET)       /* reflect the interrupt request value */
                 tci_status_word |= CST_IRQ;             /*   in the status word */
 
-            outbound_value = (uint16) tci_status_word;  /* return the status word */
+            outbound_value = tci_status_word;           /* return the status word */
 
-            dprintf (atcc_dev, DEB_CSRW, "Status is channel %d | %s\n",
+            dprintf (atcc_dev, DEB_CSRW, "Status is channel %u | %s\n",
                      tci_cntr, fmt_bitset (outbound_value, tci_status_format));
             break;
 
@@ -1492,8 +1507,11 @@ while (working_set) {                                   /* while signals remain 
 
 
         case DSETMASK:
-            tci_interrupt_mask =                                    /* set the mask flip-flop */
-              D_FF (dibptr->interrupt_mask & inbound_value);        /*   from the mask bit and the mask value */
+            if (dibptr->interrupt_mask == INTMASK_E)                /* if the mask is always enabled */
+                tci_interrupt_mask = SET;                           /*   then set the mask flip-flop */
+            else                                                    /* otherwise */
+                tci_interrupt_mask = D_FF (dibptr->interrupt_mask   /*   set the mask flip-flop if the mask bit */
+                                           & inbound_value);        /*     is present in the mask value */
 
             if (tci_interrupt_mask && dibptr->interrupt_request)    /* if the mask is enabled and a request is pending */
                 outbound_signals |= INTREQ;                         /*   then assert INTREQ */
@@ -1709,6 +1727,7 @@ tdi_master_reset ();                                    /* perform a master rese
 if (sim_switches & SWMASK ('P')) {                      /* if this is a power-on reset */
     sim_rtcn_init (poll_unit.wait, TMR_ATC);            /*   then initialize the poll timer */
     fast_data_time = FAST_IO_TIME;                      /* restore the initial fast data time */
+    atcd_ldsc [0].xmte = 1;                             /* enable transmission on the system console port */
     }
 
 if (atc_is_polling) {                                       /* if we're polling for the simulation console */
@@ -1733,8 +1752,8 @@ return SCPE_OK;
    simulation equivalent of the IORESET signal, which is asserted by the front
    panel LOAD and DUMP switches.
 
-   If a power-on reset (RESET -P) is being done, local modem control is
-   established, and DTR is set on all channels.  This is necessary so that
+   If a power-on reset (RESET -P) is being done, then local modem control is
+   established by setting DTR on all channels.  This is necessary so that
    channels not controlled by the TCI will be able to connect (TCI-controlled
    channels will have their DTR and RTS state set by the MPE TCI initialization
    routine).
@@ -1743,20 +1762,17 @@ return SCPE_OK;
 static t_stat atcc_reset (DEVICE *dptr)
 {
 uint32 channel;
-t_stat status = SCPE_OK;
 
 tci_master_reset ();                                        /* perform a master reset */
 
 if (sim_switches & SWMASK ('P')) {                          /* if this is a power-on reset */
-    status = tmxr_set_modem_control_passthru (&atcd_mdsc);  /*   then establish local modem control */
-
-    for (channel = 0; channel < TERM_COUNT; channel++)      /* for each terminal channel */
-        tmxr_set_get_modem_bits (&atcd_ldsc [channel],      /*   set the DTR line on */
-                                 TMXR_MDM_DTR,              /*     to allow non-TCI channels to connect */
+    for (channel = 0; channel < TERM_COUNT; channel++)      /*   then for each terminal channel */
+        tmxr_set_get_modem_bits (&atcd_ldsc [channel],      /*     set the DTR line on */
+                                 TMXR_MDM_DTR,              /*       to allow non-TCI channels to connect */
                                  0, NULL);
     }
 
-return status;
+return SCPE_OK;
 }
 
 
@@ -1803,14 +1819,25 @@ return status;
 
    Normally, this routine is called by the DETACH ATCD command, which is
    equivalent to DETACH ATCD0.  However, it may be called with other units in
-   two cases.
+   three cases.
 
    A DETACH ALL command will call us for unit 16 (the poll unit) if it is
-   attached.  Also, during simulator shutdown, we will be called for units 0-15
-   (detach_all in scp.c calls the detach routines of all units that do NOT have
-   UNIT_ATTABLE), as well as for unit 16 if it is attached.  In both cases, it
-   is imperative that we return SCPE_OK; otherwise any remaining device detaches
-   will not be performed.
+   attached.  A RESTORE command also will call us for unit 16 if it is attached.
+   In the latter case, the terminal channels will have already been rescheduled
+   as appropriate, so canceling them is skipped.  Also, during simulator
+   shutdown, we will be called for units 0-15 (detach_all in scp.c calls the
+   detach routines of all units that do NOT have UNIT_ATTABLE), as well as for
+   unit 16 if it is attached.  In all cases, it is imperative that we not reject
+   the request for unit 16; otherwise any remaining device detaches will not be
+   performed.
+
+
+   Implementation notes:
+
+    1. Detaching the multiplexer resets each line first, which flushes the
+       output buffer.  This ensures that buffered data that has not been output
+       via a poll_service entry before the DETACH command was issued is written
+       before the line is disconnected.
 */
 
 static t_stat atcd_detach (UNIT *uptr)
@@ -1818,13 +1845,14 @@ static t_stat atcd_detach (UNIT *uptr)
 uint32 channel;
 t_stat status = SCPE_OK;
 
-if (uptr == line_unit || uptr == &poll_unit) {              /* if we're detaching the base unit or poll unit */
-    status = tmxr_detach (&atcd_mdsc, &poll_unit);          /*   then detach the listening port */
+if (uptr == line_unit || uptr == &poll_unit) {                  /* if we're detaching the base unit or poll unit */
+    status = tmxr_detach (&atcd_mdsc, &poll_unit);              /*   then detach the listening port */
 
-    for (channel = 0; channel < TERM_COUNT; channel++) {    /* for each terminal channel */
-        atcd_ldsc [channel].rcve = FALSE;                   /*   disable reception */
-        sim_cancel (&line_unit [channel]);                  /*     and cancel any transfer in progress */
-        }
+    if ((sim_switches & SIM_SW_REST) == 0)                      /* if this is not a RESTORE call */
+        for (channel = 0; channel < TERM_COUNT; channel++) {    /*   then for each terminal channel */
+            atcd_ldsc [channel].rcve = FALSE;                   /*     disable reception */
+            sim_cancel (&line_unit [channel]);                  /*       and cancel any transfer in progress */
+            }
     }
 
 return status;
@@ -1885,7 +1913,7 @@ atcd_dib.interrupt_active  = CLEAR;                     /*   interrupt request *
 tdi_interrupt_mask = SET;                               /* set the interrupt mask */
 
 tdi_status_word = 0;                                    /* clear the status word */
-tdi_data_flag   = 0;                                    /*   and the data flag */
+tdi_data_flag   = CLEAR;                                /*   and the data flag */
 
 for (chan = FIRST_TERM; chan <= LAST_TERM; chan++) {    /* for each terminal channel */
     recv_buffer [chan] = 0;                             /*   clear the receive data buffer */
@@ -1960,14 +1988,21 @@ return;
    The channel service routine runs only when there are characters to read or
    write.  It is scheduled either at a realistic rate corresponding to the
    programmed baud rate of the channel to be serviced, or at a somewhat faster
-   optimized rate.  It is entered when a channel buffer is ready for output or
-   when the poll routine determines that there are characters ready for input.
+   optimized rate.  It is entered when a channel buffer is ready for output,
+   when the poll routine determines that there are characters ready for input,
+   or while waiting for an ACK to complete an ENQ/ACK handshake.
 
    On entry, the receive channel buffer is checked for a character.  If one is
    not already present, then the terminal multiplexer library is called to
    retrieve the waiting character.  If a valid character is now available, it is
    processed.  If the receive channel has its "diagnose" bit set, the character
    is also passed to the auxiliary channels.
+
+   If a received character is not available, then the unit's "wait" field is
+   checked to see if an ACK is expected in reply to an earlier ENQ.  If a wait
+   time is present, it is doubled, and the service is rescheduled.  However, if
+   the new wait time is longer than the current poll time, service rescheduling
+   is abandoned in favor of the normal poll for received characters.
 
    The send channel buffer is then checked for a character to output.  If one is
    present, then if it is an all-mark (sync) character, it is discarded, as the
@@ -1983,18 +2018,36 @@ return;
    simulation console (if output is to channel 0) or to the terminal multiplexer
    library for output via Telnet or a serial port on the host machine.  If the
    channel has its "diagnose" bit set, the character is also passed to the
-   auxiliary channels.
+   auxiliary channels.  If an ENQ was transmitted, service is rescheduled to
+   wait for reception of the ACK.
 
    If the data flag is clear, the indicated receive and send channels are
    checked for completion flags.  If either is set, an interrupt is requested.
 
+   If characters remain in the Telnet receive buffer, the service routine is
+   rescheduled to receive the next one.  Otherwise, the routine goes idle until
+   the next character is output or the next poll determines that there are
+   characters to receive.
+
 
    Implementation notes:
 
-    1. Calling "tmxr_getc_ln" for channel 0 is OK, as reception is disabled by
+    1. The "wait" fields of the channel units are not used (i.e., are set to
+       zero) except when channels are waiting for ACKs.  Because we want to
+       retrieve the ACK as quickly as possible but also minimize the load on the
+       host system, we initially wait the normal reception time (fast or
+       realistic) and then double the wait each time it expires without
+       reception.  Therefore, a non-zero "wait" value indicates that an ACK is
+       expected.
+
+    2. Receipt of any character cancels a pending ACK wait, even though it is
+       possible that the character is not an ACK (for example, if the character
+       was received but not processed before the ENQ was sent).
+
+    3. Calling "tmxr_getc_ln" for channel 0 is OK, as reception is disabled by
        default and therefore will return 0.
 
-    2. The send channel buffer will always be non-zero if a character is present
+    4. The send channel buffer will always be non-zero if a character is present
        (even a NUL) because the data word will have DDS_IS_SEND set.
 
        The receive buffer will always be non-zero if a character is present
@@ -2003,36 +2056,54 @@ return;
        TMXR_VALID set, and characters looped back from sending will have
        DDS_IS_SEND set.
 
-    3. Reception of a loopback character is performed immediately because the
+    5. Reception of a loopback character is performed immediately because the
        reception occurs concurrently with transmission.  Reception of a locally
        generated ACK is scheduled with a one-character delay to reflect the
        remote device transmission delay.
 
-    4. If storing an ACK locally overwrites a character already present but not
+    6. If storing an ACK locally overwrites a character already present but not
        yet processed, then the receive routine will set the character lost flag.
 
-    5. Both TMXR_VALID and SCPE_KFLAG are set on internally generated ACKs only
+    7. Both TMXR_VALID and SCPE_KFLAG are set on internally generated ACKs only
        so that a debug trace will record the generation correctly.
 
-    6. The console library "sim_putchar_s" routine and the terminal multiplexer
-       library "tmxr_putc_ln" routine return SCPE_STALL if the Telnet output
-       buffer is full.  In this case, transmission is rescheduled with a delay
-       to allow the buffer to drain.
+    8. The console library "sim_putchar_s" routine and the terminal multiplexer
+       library "tmxr_putc_ln" routine return SCPE_STALL if they are called when
+       the transmit buffer is full.  When called to add the last character to
+       the buffer, the routines return SCPE_OK but also change the "xmte" field
+       of the terminal multiplexer line (TMLN) structure from 1 to 0 to indicate
+       that further calls will be rejected; the value is set back to 1 when the
+       transmit buffer empties.
 
-       They also return SCPE_LOST if the line has been dropped on the remote
-       end.  We ignore the error here to allow the simulation to continue while
-       ignoring the output.
+       Entry with the transmit buffer full causes the service to be rescheduled
+       to retry the write after a short delay.  The "tmxr_poll_tx" routine must
+       be called in this case, as it is responsible for transmitting the buffer
+       contents and therefore freeing space in the buffer.
 
-    7. The receive/send completion flag (buffer flag) will not set unless the
+       Both library "put" routines also return SCPE_LOST if the line has been
+       dropped on the remote end.  We ignore that error here to allow the
+       simulation to continue while ignoring the output to a disconnected
+       terminal.
+
+    9. Characters written using "tmxr_putc_ln" are buffered and not transmitted
+       until the buffer is full, the character is an ENQ (and so we will be
+       waiting to receive an ACK), or the next input poll is performed.  The
+       last case ensures that the buffer is flushed when output is complete, as
+       there is no indication from the CPU that the last character has been
+       sent.  This does incur a delay of up to 10 milliseconds, but this is
+       imperceptible by the user.  Buffering offers significantly better
+       throughput compared to transmitting each character as it is written.
+
+   10. The receive/send completion flag (buffer flag) will not set unless the
        interrupt enable flag for that channel is also set.  If enable is not
        set, the completion indication will be lost.
 */
 
 static t_stat line_service (UNIT *uptr)
 {
-const  int32 channel = uptr - line_unit;                    /* channel number */
+const  int32 channel = (int32) (uptr - line_unit);          /* the channel number */
 const  int32 alt_channel = channel ^ 1;                     /* alternate channel number for diagnostic mode */
-const  t_bool loopback = (atcd_dev.flags & DEV_DIAG) != 0;  /* device is set for diagnostic mode */
+const  t_bool loopback = (atcd_dev.flags & DEV_DIAG) != 0;  /* TRUE if device is set for diagnostic mode */
 int32  recv_data, send_data, char_data, cvtd_data;
 t_stat result = SCPE_OK;
 
@@ -2042,17 +2113,35 @@ dprintf (atcd_dev, DEB_SERV, "Channel %d service entered\n",
 
 /* Reception service */
 
-recv_data = recv_buffer [channel];                          /* get the current buffer character */
+recv_data = recv_buffer [channel];                      /* get the current buffer character */
 
-if (recv_data == 0)                                         /* if there's none present */
-    recv_data = tmxr_getc_ln (&atcd_ldsc [channel]);        /*   then see if there's a character ready via Telnet */
+if (recv_data == 0) {                                   /* if no character is present */
+    if (uptr->wait)                                     /*   then if the channel is waiting for an ACK */
+        tmxr_poll_rx (&atcd_mdsc);                      /*     then poll the line to see if it has arrived */
 
-if (recv_data & ~DDR_DATA_MASK) {                           /* if we now have a valid character */
-    receive (channel, recv_data, loopback);                 /*   then process the reception */
-
-    if (recv_param [channel] & DPI_DIAGNOSE)                /* if a diagnosis is requested */
-        diagnose (recv_param [channel], recv_data);         /*   then route the data to the auxiliary channels */
+    recv_data = tmxr_getc_ln (&atcd_ldsc [channel]);    /* see if there's now a character ready */
     }
+
+if (recv_data & ~DDR_DATA_MASK) {                       /* if we now have a valid character */
+    receive (channel, recv_data, loopback);             /*   then process the reception */
+
+    if (recv_param [channel] & DPI_DIAGNOSE)            /* if a diagnosis is requested */
+        diagnose (recv_param [channel], recv_data);     /*   then route the data to the auxiliary channels */
+
+    uptr->wait = 0;                                     /* clear any pending ACK wait */
+    }
+
+else if (uptr->wait) {                                  /* otherwise if an ACK is expected but has not arrived */
+    uptr->wait = uptr-> wait * 2;                       /*   then double the wait time for the next check */
+
+    if (uptr->wait < poll_unit.wait) {                  /* if the wait is shorter than the standard poll wait */
+        sim_activate (uptr, uptr->wait);                /*   then reschedule the line service */
+
+        dprintf (atcd_dev, DEB_SERV, "Channel %d delay %d service rescheduled for ACK\n",
+                 channel, uptr->wait);
+        }
+    }
+
 
 /* Transmission service */
 
@@ -2117,43 +2206,56 @@ if (send_buffer [channel]) {                                /* if data is availa
         cvtd_data = sim_tt_outcvt (LOWER_BYTE (send_data),      /*   so convert it as directed */
                                    TT_GET_MODE (uptr->flags));  /*     by the output mode flag */
 
-        if (cvtd_data >= 0)                                     /* if the converted character is printable */
-            if (channel == 0)                                   /*   then if we are writing to channel 0 */
-                result = sim_putchar_s (cvtd_data);             /*     then output it to the simulation console */
-            else                                                /*   otherwise */
-                result = tmxr_putc_ln (&atcd_ldsc [channel],    /*     output it to the multiplexer line */
-                                       cvtd_data);
-
-        if (result == SCPE_STALL) {                             /* if the buffer is full */
+        if (cvtd_data >= 0 && atcd_ldsc [channel].xmte == 0) {  /* if it's printable but the transmit buffer is full */
             activate_unit (uptr, Stall);                        /*   then retry the output a while later */
-            result = SCPE_OK;                                   /*     and return OK to continue */
+
+            tmxr_poll_tx (&atcd_mdsc);                          /* transmit the line buffer */
+
+            dprintf (atcd_dev, DEB_XFER, "Channel %d character %s transmission stalled for full buffer\n",
+                     channel, fmt_char (cvtd_data));
             }
 
-        else if (result == SCPE_OK || result == SCPE_LOST) {    /* otherwise if the character is queued to transmit */
-            tmxr_poll_tx (&atcd_mdsc);                          /*   then send (or ignore) it */
+        else {                                                  /* otherwise the character will be consumed */
+            if (cvtd_data >= 0)                                 /* if the converted character is printable */
+                if (channel == 0)                               /*   then if we are writing to channel 0 */
+                    result = sim_putchar_s (cvtd_data);         /*     then output it to the simulation console */
 
-            if (DPRINTING (atcd_dev, DEB_XFER))
-                if (result == SCPE_LOST)
-                    hp_debug (&atcd_dev, DEB_XFER, "Channel %d character %s discarded by connection loss\n",
-                              channel, fmt_char (char_data));
+                else {                                              /*   otherwise */
+                    result = tmxr_putc_ln (&atcd_ldsc [channel],    /*     output it to the multiplexer line */
+                                           cvtd_data);
 
-                else if (cvtd_data >= 0)
-                    hp_debug (&atcd_dev, DEB_XFER, "Channel %d character %s sent\n",
-                              channel, fmt_char (cvtd_data));
+                    if (char_data == ENQ                        /* if sending an ENQ */
+                      || atcd_ldsc [channel].xmte == 0)         /*   or the output buffer is full */
+                        tmxr_poll_tx (&atcd_mdsc);              /*     then transmit the line buffer */
+                    }
 
-                else
-                    hp_debug (&atcd_dev, DEB_XFER, "Channel %d character %s discarded by output filter\n",
-                              channel, fmt_char (char_data));
+            if (result == SCPE_OK || result == SCPE_LOST) {     /* if the character is queued to transmit */
+                if (DPRINTING (atcd_dev, DEB_XFER))
+                    if (result == SCPE_LOST)
+                        hp_debug (&atcd_dev, DEB_XFER, "Channel %d character %s discarded by connection loss\n",
+                                  channel, fmt_char (char_data));
 
-            if (send_param [channel] & DPI_DIAGNOSE)            /* if a diagnosis is requested */
-                diagnose (send_param [channel], send_data);     /*   then route the data to the auxiliary channels */
+                    else if (cvtd_data >= 0)
+                        hp_debug (&atcd_dev, DEB_XFER, "Channel %d character %s sent\n",
+                                  channel, fmt_char (cvtd_data));
 
-            send_buffer [channel] = 0;                          /* clear the buffer */
+                    else
+                        hp_debug (&atcd_dev, DEB_XFER, "Channel %d character %s discarded by output filter\n",
+                                  channel, fmt_char (char_data));
 
-            if (send_param [channel] & DPI_ENABLE_IRQ)          /* if this channel is enabled to interrupt */
-                send_status [channel] |= DST_COMPLETE;          /*   then set the completion flag */
+                if (send_param [channel] & DPI_DIAGNOSE)        /* if a diagnosis is requested */
+                    diagnose (send_param [channel], send_data); /*   then route the data to the auxiliary channels */
 
-            result = SCPE_OK;                                   /* return OK in case the connection was lost */
+                send_buffer [channel] = 0;                      /* clear the buffer */
+
+                if (send_param [channel] & DPI_ENABLE_IRQ)      /* if this channel is enabled to interrupt */
+                    send_status [channel] |= DST_COMPLETE;      /*   then set the completion flag */
+
+                if (cvtd_data == ENQ && result == SCPE_OK)      /* if an ENQ was successfully sent */
+                    uptr->wait = activate_unit (uptr, Receive); /*   then schedule the ACK reception */
+
+                result = SCPE_OK;                               /* return OK in case the connection was lost */
+                }
             }
         }
     }
@@ -2162,6 +2264,9 @@ if (send_buffer [channel]) {                                /* if data is availa
 if (tdi_data_flag == CLEAR)                             /* if an interrupt is not currently pending */
     scan_channels (channel);                            /*   then scan the channels for completion flags */
 
+if (tmxr_rqln (&atcd_ldsc [channel]))                   /* if characters are still available on this channel */
+    activate_unit (uptr, Receive);                      /*   then reschedule the line service */
+
 return result;                                          /* return the result of the service */
 }
 
@@ -2169,10 +2274,9 @@ return result;                                          /* return the result of 
 /* Multiplexer poll service.
 
    The poll service routine is used to poll for Telnet connections and incoming
-   characters.  It also polls the simulation console for channel 0.  Polling
-   starts at simulator startup or when the TDI is enabled and stops when it is
-   disabled.
-
+   characters.  It also polls the simulation console for channel 0 and flushes
+   the output buffers for all channels.  Polling starts at simulator startup or
+   when the TDI is enabled and stops when it is disabled.
 
    Implementation notes:
 
@@ -2185,20 +2289,30 @@ return result;                                          /* return the result of 
        may be shorter than the channel service time, and as the console provides
        no buffering, a second character received before the channel service had
        been entered would be lost.
+
+    3. A channel that is waiting for an ACK to complete an ENQ/ACK handshake has
+       its unit "wait" field set non-zero.  If the field value is greater than
+       the realistic reception time, then the line service is scheduled
+       immediately, as the channel has already waited the minimum time necessary
+       (the "wait" field value is doubled each time the line service is entered
+       before the ACK has been received).  Otherwise, the service is scheduled
+       using the normal reception time.
 */
 
 static t_stat poll_service (UNIT *uptr)
 {
-int32 chan, line_state;
+int32  chan, line_state;
 t_stat status = SCPE_OK;
 
-dprintf (atcd_dev, DEB_PSERV, "Poll service entered\n");
+dprintf (atcd_dev, DEB_PSERV, "Poll delay %d service entered\n",
+         uptr->wait);
 
 if ((atcc_dev.flags & DEV_DIS) == 0)
-    dprintf (atcc_dev, DEB_PSERV, "Poll service entered\n");
+    dprintf (atcc_dev, DEB_PSERV, "Poll delay %d service entered\n",
+             uptr->wait);
 
 if ((atcd_dev.flags & DEV_DIAG) == 0) {                 /* if we're not in diagnostic mode */
-    chan = tmxr_poll_conn (&atcd_mdsc);                 /*   then check for a new multiplex connection */
+    chan = tmxr_poll_conn (&atcd_mdsc);                 /*   then check for a new multiplexer connection */
 
     if (chan != -1) {                                   /* if a new connection was established */
         atcd_ldsc [chan].rcve = TRUE;                   /*   then enable the channel to receive */
@@ -2208,7 +2322,8 @@ if ((atcd_dev.flags & DEV_DIAG) == 0) {                 /* if we're not in diagn
         }
     }
 
-tmxr_poll_rx (&atcd_mdsc);                              /* poll the multiplex connections for input */
+tmxr_poll_tx (&atcd_mdsc);                              /* flush the multiplexer output buffers */
+tmxr_poll_rx (&atcd_mdsc);                              /*   and poll the multiplexer connections for input */
 
 if ((atcc_dev.flags & (DEV_DIAG | DEV_DIS)) == 0)       /* if we're not in diagnostic mode or are disabled */
     for (chan = FIRST_TERM; chan <= LAST_TERM; chan++)  /*   then scan the channels for line state changes */
@@ -2236,15 +2351,21 @@ if ((atcc_dev.flags & (DEV_DIAG | DEV_DIS)) == 0)       /* if we're not in diagn
 status = sim_poll_kbd ();                               /* poll the simulation console keyboard for input */
 
 if (status >= SCPE_KFLAG) {                             /* if a character was present */
-    recv_buffer [0] = (uint16) status;                  /*   then save it for processing */
+    recv_buffer [0] = (HP_WORD) status;                 /*   then save it for processing */
     status = SCPE_OK;                                   /*     and then clear the status */
 
     line_service (&line_unit [0]);                      /* run the system console's I/O service */
     }
 
-for (chan = FIRST_TERM; chan <= LAST_TERM; chan++)      /* check each of the receive channels for available input */
-    if (tmxr_rqln (&atcd_ldsc [chan]))                  /* if characters are available on this channel */
-        activate_unit (&line_unit [chan], Receive);     /*   then activate the channel's I/O service */
+for (chan = FIRST_TERM; chan <= LAST_TERM; chan++)                  /* check each of the channels for available input */
+    if (tmxr_rqln (&atcd_ldsc [chan]))                              /* if characters are available on this channel */
+        if (line_unit [chan].wait > line_unit [chan].recv_time) {   /*   then if the channel is waiting for an ACK */
+            sim_cancel (&line_unit [chan]);                         /*     then cancel any current wait */
+            activate_unit (&line_unit [chan], Loop);                /*       and activate the line service immediately */
+            }
+
+        else                                                        /*   otherwise this is a normal input */
+            activate_unit (&line_unit [chan], Receive);             /*     so schedule with the normal receive timing */
 
 if (cpu_is_calibrated)                                  /* if the process clock is calibrated */
     uptr->wait = sim_activate_time (cpu_pclk_uptr);     /*   then synchronize with it */
@@ -2276,9 +2397,9 @@ return status;                                          /* return the service st
        called.
 */
 
-static t_stat activate_unit (UNIT *uptr, ACTIVATOR reason)
+static int32 activate_unit (UNIT *uptr, ACTIVATOR reason)
 {
-const int32 channel = uptr - line_unit;                 /* the channel number */
+const int32 channel = (int32) (uptr - line_unit);       /* the channel number */
 int32 delay = 0;
 
 if (atcd_dev.flags & (DEV_DIAG | DEV_REALTIME))         /* if either diagnostic or real-time mode is set */
@@ -2324,7 +2445,8 @@ else                                                    /* otherwise, we are in 
 dprintf (atcd_dev, DEB_SERV, "Channel %d delay %d service scheduled\n",
          channel, delay);
 
-return sim_activate (uptr, delay);                      /* activate the unit and return the activation status */
+sim_activate (uptr, delay);                             /* activate the unit */
+return delay;                                           /*   and return the activation delay */
 }
 
 
@@ -2438,7 +2560,7 @@ return sim_activate (uptr, delay);                      /* activate the unit and
        "addition" of the receive overhead may actually be a subtraction.
 */
 
-static uint32 service_time (uint16 control, ACTIVATOR reason)
+static uint32 service_time (HP_WORD control, ACTIVATOR reason)
 {
 const  double recirc_time = 69.44;                                  /* microseconds per memory recirculation */
 const  uint32 recirc_per_bit = DPI_BAUD_RATE (control) + 1;         /* number of memory recirculations per bit */
@@ -2483,13 +2605,13 @@ return (uint32) (usec_per_char / USEC_PER_EVENT);       /* return the service ti
        from the parameter word.
 */
 
-static void store (uint16 control, uint16 data)
+static void store (HP_WORD control, HP_WORD data)
 {
 const uint32 channel = DCN_CHAN (control);              /* current channel number */
 
 if (data & DDS_IS_SEND)                                 /* if this is a send parameter or data */
     if (channel > LAST_TERM)                            /*   then report if the channel number is out of range */
-        dprintf (atcd_dev, DEB_CSRW, "Send channel %d invalid\n",
+        dprintf (atcd_dev, DEB_CSRW, "Send channel %u invalid\n",
                  channel);
 
     else if (data & DPI_IS_PARAM) {                     /* otherwise if this is a parameter store */
@@ -2497,7 +2619,7 @@ if (data & DDS_IS_SEND)                                 /* if this is a send par
         line_unit [channel].send_time =                 /*    and set the service time */
           service_time (data, Send);
 
-        dprintf (atcd_dev, DEB_CSRW, "Channel %d send parameter %06o stored\n",
+        dprintf (atcd_dev, DEB_CSRW, "Channel %u send parameter %06o stored\n",
                  channel, data);
         }
 
@@ -2508,7 +2630,7 @@ if (data & DDS_IS_SEND)                                 /* if this is a send par
 
         send_buffer [channel] = data;                   /* store it in the buffer */
 
-        dprintf (atcd_dev, DEB_CSRW, "Channel %d send data %06o stored\n",
+        dprintf (atcd_dev, DEB_CSRW, "Channel %u send data %06o stored\n",
                  channel, data);
 
         activate_unit (&line_unit [channel], Send);     /* schedule the transmission event */
@@ -2516,10 +2638,10 @@ if (data & DDS_IS_SEND)                                 /* if this is a send par
 
 else                                                    /* otherwise this is a receive parameter */
     if (channel >= RECV_CHAN_COUNT)                     /* report if the channel number is out of range */
-        dprintf (atcd_dev, DEB_CSRW, "Receive channel %d invalid\n",
+        dprintf (atcd_dev, DEB_CSRW, "Receive channel %u invalid\n",
                  channel);
 
-    else if (data & DPI_IS_PARAM) {                     /* otherwise this is a parameter store */
+    else if (data & DPI_IS_PARAM) {                     /* otherwise if this is a parameter store */
         recv_param [channel] = data;                    /*   then save it */
 
         if (channel <= LAST_TERM) {                     /* if this is a terminal channel */
@@ -2530,12 +2652,12 @@ else                                                    /* otherwise this is a r
               PAD_BITS (data);
             }
 
-        dprintf (atcd_dev, DEB_CSRW, "Channel %d receive parameter %06o stored\n",
+        dprintf (atcd_dev, DEB_CSRW, "Channel %u receive parameter %06o stored\n",
                  channel, data);
         }
 
     else                                                /* otherwise a data store to a receive channel is invalid */
-        dprintf (atcd_dev, DEB_CSRW, "Channel %d receive output data word %06o invalid\n",
+        dprintf (atcd_dev, DEB_CSRW, "Channel %u receive output data word %06o invalid\n",
                  channel, data);
 }
 
@@ -2605,11 +2727,11 @@ else {                                                  /* otherwise a normal ch
                  channel);
         }
 
-    recv_buffer [channel] = (uint16) (recv_data | pad);     /* save the character and padding in the buffer */
+    recv_buffer [channel] = recv_data | pad;            /* save the character and padding in the buffer */
 
-    if (loopback) {                                         /* if this channel has a loopback cable installed */
-        if (recv_param [channel] & DPI_ENABLE_ECHO) {       /*   and the channel has echo enabled */
-            recv_buffer [channel ^ 1] = (uint16) data;      /*     then send the data back to the other channel */
+    if (loopback) {                                     /* if this channel has a loopback cable installed */
+        if (recv_param [channel] & DPI_ENABLE_ECHO) {   /*   and the channel has echo enabled */
+            recv_buffer [channel ^ 1] = data;           /*     then send the data back to the other channel */
 
             activate_unit (&line_unit [channel ^ 1], Loop); /* schedule the reception */
 
@@ -2618,23 +2740,26 @@ else {                                                  /* otherwise a normal ch
             }
         }
 
-    else if (channel <= LAST_TERM) {                            /* otherwise if it's a receive channel */
-        if (line_unit [channel].flags & UNIT_CAPSLOCK) {        /*   then if caps lock is down */
-            recv_data = toupper (recv_data);                    /*     then convert to upper case if lower */
-            recv_buffer [channel] = (uint16) (recv_data | pad); /*       and replace the character in the buffer */
+    else if (channel <= LAST_TERM) {                        /* otherwise if it's a receive channel */
+        if (line_unit [channel].flags & UNIT_CAPSLOCK) {    /*   then if caps lock is down */
+            recv_data = toupper (recv_data);                /*     then convert to upper case if lower */
+            recv_buffer [channel] = recv_data | pad;        /*       and replace the character in the buffer */
             }
 
-        if (recv_param [channel] & DPI_ENABLE_ECHO) {       /* if the channel has echo enabled */
-            char_echo = sim_tt_outcvt (recv_data,           /*   then convert the character per the output mode */
+        if (recv_param [channel] & DPI_ENABLE_ECHO) {   /* if the channel has echo enabled */
+            char_echo = sim_tt_outcvt (recv_data,       /*   then convert the character per the output mode */
                                        TT_GET_MODE (line_unit [channel].flags));
 
-            if (char_echo >= 0) {                           /* if the converted character is valid for the mode */
-                if (channel == 0)                           /*   then if this is for channel 0 */
-                    sim_putchar (char_echo);                /*     then write it back to the simulation console */
+            if (char_echo >= 0) {                       /* if the converted character is valid for the mode */
+                if (channel == 0)                       /*   then if this is for channel 0 */
+                    sim_putchar (char_echo);            /*     then write it back to the simulation console */
 
-                else {                                              /* otherwise */
-                    tmxr_putc_ln (&atcd_ldsc [channel], char_echo); /*   write it to the multiplexer output line */
-                    tmxr_poll_tx (&atcd_mdsc);                      /*     and poll to transmit it now */
+                else {                                  /* otherwise */
+                    tmxr_putc_ln (&atcd_ldsc [channel], /*   write it to the multiplexer output line */
+                                  char_echo);
+
+                    if (atcd_ldsc [channel].xmte == 0)  /* if the output buffer is full */
+                        tmxr_poll_tx (&atcd_mdsc);      /*   then transmit the line buffer */
                     }
 
                 dprintf (atcd_dev, DEB_XFER, ("Channel %d character %s echoed\n"),
@@ -2679,9 +2804,9 @@ return;
    character only if it is configured for the same baud rate and character size.
 */
 
-static void diagnose (uint16 control, int32 data)
+static void diagnose (HP_WORD control, int32 data)
 {
-const uint16 config = control & DPI_CHAR_CONFIG;            /* main channel character size and baud rate */
+const HP_WORD config = control & DPI_CHAR_CONFIG;           /* main channel character size and baud rate */
 int32 channel;
 
 for (channel = FIRST_AUX; channel <= LAST_AUX; channel++)   /* scan the auxiliary channels */
@@ -2812,10 +2937,10 @@ return;                                                     /* no channel has co
    pointing at the interrupting channel.
 */
 
-static uint16 scan_status (void)
+static HP_WORD scan_status (void)
 {
-uint32 chan_count;
-uint16 interrupts;
+uint32  chan_count;
+HP_WORD interrupts;
 
 if (tci_scan)                                               /* if the control interface is scanning */
     chan_count = TERM_COUNT;                                /*   then look at all of the channels */
@@ -2835,7 +2960,7 @@ while (chan_count > 0) {                                    /* scan the control 
 
             tci_scan = CLEAR;                               /* stop the scan at the current channel */
 
-            dprintf (atcc_dev, DEB_CSRW, "Channel %d interrupt requested\n",
+            dprintf (atcc_dev, DEB_CSRW, "Channel %u interrupt requested\n",
                                          tci_cntr);
             break;
             }

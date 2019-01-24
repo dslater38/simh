@@ -31,8 +31,6 @@
 #include "scp.h"
 
 t_bool vid_active = FALSE;
-int32 vid_mouse_xrel;
-int32 vid_mouse_yrel;
 int32 vid_cursor_x;
 int32 vid_cursor_y;
 t_bool vid_mouse_b1 = FALSE;
@@ -58,6 +56,34 @@ char vid_release_key[64] = "Ctrl-Right-Shift";
 #include <SDL.h>
 #include <SDL_thread.h>
 
+static const char *key_names[] = 
+    {"F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", 
+     "0",   "1",  "2",  "3",  "4",  "5",  "6",  "7",  "8",  "9",    
+     "A",   "B",  "C",  "D",  "E",  "F",  "G",  "H",  "I",  "J", 
+     "K",   "L",  "M",  "N",  "O",  "P",  "Q",  "R",  "S",  "T", 
+     "U",   "V",  "W",  "X",  "Y",  "Z", 
+     "BACKQUOTE",   "MINUS",   "EQUALS", "LEFT_BRACKET", "RIGHT_BRACKET", 
+     "SEMICOLON", "SINGLE_QUOTE", "BACKSLASH", "LEFT_BACKSLASH", "COMMA", 
+     "PERIOD", "SLASH", "PRINT", "SCRL_LOCK", "PAUSE", "ESC", "BACKSPACE", 
+     "TAB", "ENTER", "SPACE", "INSERT", "DELETE", "HOME", "END", "PAGE_UP", 
+     "PAGE_DOWN", "UP", "DOWN", "LEFT", "RIGHT", "CAPS_LOCK", "NUM_LOCK", 
+     "ALT_L", "ALT_R", "CTRL_L", "CTRL_R", "SHIFT_L", "SHIFT_R", 
+     "WIN_L", "WIN_R", "MENU", "KP_ADD", "KP_SUBTRACT", "KP_END", "KP_DOWN", 
+     "KP_PAGE_DOWN", "KP_LEFT", "KP_RIGHT", "KP_HOME", "KP_UP", "KP_PAGE_UP", 
+     "KP_INSERT", "KP_DELETE", "KP_5", "KP_ENTER", "KP_MULTIPLY", "KP_DIVIDE"
+     };
+
+const char *vid_key_name (int32 key)
+{
+static char tmp_key_name[40];
+
+    if (key < sizeof(key_names)/sizeof(key_names[0]))
+        sprintf (tmp_key_name, "SIM_KEY_%s", key_names[key]);
+    else
+        sprintf (tmp_key_name, "UNKNOWN KEY: %d", key);
+    return tmp_key_name;
+}
+
 #if defined(HAVE_LIBPNG)
 /* From: https://github.com/driedfruit/SDL_SavePNG */
 
@@ -68,7 +94,7 @@ char vid_release_key[64] = "Ctrl-Right-Shift";
  * via SDL_GetError().
  */
 #define SDL_SavePNG(surface, file) \
-	SDL_SavePNG_RW(surface, SDL_RWFromFile(file, "wb"), 1)
+        SDL_SavePNG_RW(surface, SDL_RWFromFile(file, "wb"), 1)
 
 /*
  * SDL_SavePNG -- libpng-based SDL_Surface writer.
@@ -249,9 +275,9 @@ static int SDL_SavePNG_RW(SDL_Surface *surface, SDL_RWops *dst, int freedst)
 #define EVENT_SHOW       6                              /* show SDL capabilities */
 #define EVENT_OPEN       7                              /* vid_open request */
 #define EVENT_EXIT       8                              /* program exit */
-#define EVENT_SCREENSHOT 9                              /* show SDL capabilities */
+#define EVENT_SCREENSHOT 9                              /* produce screenshot of video window */
 #define EVENT_BEEP      10                              /* audio beep */
-#define MAX_EVENTS       20                             /* max events in queue */
+#define MAX_EVENTS      20                              /* max events in queue */
 
 typedef struct {
     SIM_KEY_EVENT events[MAX_EVENTS];
@@ -380,16 +406,23 @@ main_argv = argv;
 
 #if SDL_MAJOR_VERSION == 1
 _XInitThreads();
-SDL_Init (SDL_INIT_VIDEO|SDL_INIT_NOPARACHUTE);
+status = SDL_Init (SDL_INIT_VIDEO|SDL_INIT_NOPARACHUTE);
 
 vid_main_thread_handle = SDL_CreateThread (main_thread , NULL);
 #else
 SDL_SetHint (SDL_HINT_RENDER_DRIVER, "software");
 
-SDL_Init (SDL_INIT_VIDEO);
+status = SDL_Init (SDL_INIT_VIDEO);
 
 vid_main_thread_handle = SDL_CreateThread (main_thread , "simh-main", NULL);
 #endif
+
+if (status) {
+    fprintf (stderr, "SDL Video subsystem can't initialize\n");
+    exit (1);
+    }
+
+sim_os_set_thread_priority (PRIORITY_ABOVE_NORMAL);
 
 vid_beep_setup (400, 660);
 
@@ -493,8 +526,6 @@ if (!vid_active) {
     vid_height = height;
     vid_mouse_captured = FALSE;
     vid_cursor_visible = (vid_flags & SIM_VID_INPUTCAPTURED);
-    vid_mouse_xrel = 0;
-    vid_mouse_yrel = 0;
 
     vid_key_events.head = 0;
     vid_key_events.tail = 0;
@@ -532,11 +563,11 @@ if (vid_active) {
 
         while (SDL_PushEvent (&user_event) < 0)
             sim_os_ms_sleep (10);
-        if (vid_thread_handle) {
-            SDL_WaitThread (vid_thread_handle, &status);
-            vid_thread_handle = NULL;
-            }
         vid_dev = NULL;
+        }
+    if (vid_thread_handle) {
+        SDL_WaitThread (vid_thread_handle, &status);
+        vid_thread_handle = NULL;
         }
     while (vid_ready)
         sim_os_ms_sleep (10);
@@ -687,6 +718,9 @@ void vid_set_cursor_position (int32 x, int32 y)
 int32 x_delta = vid_cursor_x - x;
 int32 y_delta = vid_cursor_y - y;
 
+if (vid_flags & SIM_VID_INPUTCAPTURED)
+    return;
+
 if ((x_delta) || (y_delta)) {
     sim_debug (SIM_VID_DBG_CURSOR, vid_dev, "vid_set_cursor_position(%d, %d) - Cursor position changed\n", x, y);
     /* Any queued mouse motion events need to have their relative 
@@ -698,12 +732,8 @@ if ((x_delta) || (y_delta)) {
         for (i=0; i<vid_mouse_events.count; i++) {
             ev = &vid_mouse_events.events[(vid_mouse_events.head + i)%MAX_EVENTS];
             sim_debug (SIM_VID_DBG_CURSOR, vid_dev, "Pending Mouse Motion Event Adjusted from: (%d, %d) to (%d, %d)\n", ev->x_rel, ev->y_rel, ev->x_rel + x_delta, ev->y_rel + y_delta);
-            vid_mouse_xrel -= ev->x_rel;                            /* remove previously accumulated relative position */
-            vid_mouse_yrel -= ev->y_rel;
             ev->x_rel += x_delta;
             ev->y_rel += y_delta;
-            vid_mouse_xrel += ev->x_rel;                            /* update cumulative x & y rel */
-            vid_mouse_yrel += ev->y_rel;
             }
         if (SDL_SemPost (vid_mouse_events.sem))
             sim_printf ("%s: vid_set_cursor_position(): SDL_SemPost error: %s\n", vid_dev ? sim_dname(vid_dev) : "Video Device", SDL_GetError());
@@ -1149,23 +1179,21 @@ if (vid_mouse_captured) {
 if (!sim_is_running)
     return;
 if (SDL_SemWait (vid_key_events.sem) == 0) {
-    sim_debug (SIM_VID_DBG_KEY, vid_dev, "Keyboard Event: State: %d, Keysym(scancode,sym): (%d,%d)\n", event->state, event->keysym.scancode, event->keysym.sym);
     if (vid_key_events.count < MAX_EVENTS) {
+        ev.key = vid_map_key (event->keysym.sym);
+        sim_debug (SIM_VID_DBG_KEY, vid_dev, "Keyboard Event: State: %s, Keysym(scancode,sym): (%d,%d) - %s\n", (event->state == SDL_PRESSED) ? "PRESSED" : "RELEASED", event->keysym.scancode, event->keysym.sym, vid_key_name(ev.key));
         if (event->state == SDL_PRESSED) {
 #if SDL_MAJOR_VERSION == 1
             if (!vid_key_state[event->keysym.sym]) {    /* Key was not down before */
                 vid_key_state[event->keysym.sym] = TRUE;
 #else
-            if (!vid_key_state[event->keysym.scancode]) {    /* Key was not down before */
+            if (!vid_key_state[event->keysym.scancode]) {/* Key was not down before */
                 vid_key_state[event->keysym.scancode] = TRUE;
 #endif
-                ev.key = vid_map_key (event->keysym.sym);
                 ev.state = SIM_KEYPRESS_DOWN;
                 }
-            else {
-                ev.key = vid_map_key (event->keysym.sym);
+            else
                 ev.state = SIM_KEYPRESS_REPEAT;
-                }
             }
         else {
 #if SDL_MAJOR_VERSION == 1
@@ -1173,7 +1201,6 @@ if (SDL_SemWait (vid_key_events.sem) == 0) {
 #else
             vid_key_state[event->keysym.scancode] = FALSE;
 #endif
-            ev.key = vid_map_key (event->keysym.sym);
             ev.state = SIM_KEYPRESS_UP;
             }
         vid_key_events.events[vid_key_events.tail++] = ev;
@@ -1182,7 +1209,7 @@ if (SDL_SemWait (vid_key_events.sem) == 0) {
             vid_key_events.tail = 0;
         }
     else {
-        sim_debug (SIM_VID_DBG_KEY, vid_dev, "Keyboard Event DISCARDED: State: %d, Keysym: Scancode: %d, Keysym: %d\n", event->state, event->keysym.scancode, event->keysym.sym);
+        sim_debug (SIM_VID_DBG_KEY, vid_dev, "Keyboard Event DISCARDED: State: %s, Keysym: Scancode: %d, Keysym: %d\n", (event->state == SDL_PRESSED) ? "PRESSED" : "RELEASED", event->keysym.scancode, event->keysym.sym);
         }
     if (SDL_SemPost (vid_key_events.sem))
         sim_printf ("%s: vid_key(): SDL_SemPost error: %s\n", sim_dname(vid_dev), SDL_GetError());
@@ -1214,7 +1241,7 @@ while (SDL_PeepEvents (&dummy_event, 1, SDL_GETEVENT, SDL_MOUSEMOTION, SDL_MOUSE
     event->yrel += dev->yrel;
     event->x = dev->x;
     event->y = dev->y;
-    event->state ^= dev->state;
+    event->state = dev->state;
     sim_debug (SIM_VID_DBG_MOUSE, vid_dev, "Mouse Move Event: Additional Event Coalesced:pos:(%d,%d) rel:(%d,%d) buttons:(%d,%d,%d)\n", 
         dev->x, dev->y, dev->xrel, dev->yrel, (dev->state & SDL_BUTTON(SDL_BUTTON_LEFT)) ? 1 : 0, (dev->state & SDL_BUTTON(SDL_BUTTON_MIDDLE)) ? 1 : 0, (dev->state & SDL_BUTTON(SDL_BUTTON_RIGHT)) ? 1 : 0);
     };
@@ -1223,13 +1250,11 @@ if (SDL_SemWait (vid_mouse_events.sem) == 0) {
         event->xrel = (event->x - vid_cursor_x);
         event->yrel = (event->y - vid_cursor_y);
         }
-    vid_mouse_xrel += event->xrel;                          /* update cumulative x rel */
-    vid_mouse_yrel += event->yrel;                          /* update cumulative y rel */
     vid_mouse_b1 = (event->state & SDL_BUTTON(SDL_BUTTON_LEFT)) ? TRUE : FALSE;
     vid_mouse_b2 = (event->state & SDL_BUTTON(SDL_BUTTON_MIDDLE)) ? TRUE : FALSE;
     vid_mouse_b3 = (event->state & SDL_BUTTON(SDL_BUTTON_RIGHT)) ? TRUE : FALSE;
-    sim_debug (SIM_VID_DBG_MOUSE, vid_dev, "Mouse Move Event: pos:(%d,%d) rel:(%d,%d) buttons:(%d,%d,%d) - Count: %d vid_mouse_rel:(%d,%d), vid_cursor:(%d,%d)\n", 
-                                            event->x, event->y, event->xrel, event->yrel, (event->state & SDL_BUTTON(SDL_BUTTON_LEFT)) ? 1 : 0, (event->state & SDL_BUTTON(SDL_BUTTON_MIDDLE)) ? 1 : 0, (event->state & SDL_BUTTON(SDL_BUTTON_RIGHT)) ? 1 : 0, vid_mouse_events.count, vid_mouse_xrel, vid_mouse_yrel, vid_cursor_x, vid_cursor_y);
+    sim_debug (SIM_VID_DBG_MOUSE, vid_dev, "Mouse Move Event: pos:(%d,%d) rel:(%d,%d) buttons:(%d,%d,%d) - Count: %d vid_cursor:(%d,%d)\n", 
+                                            event->x, event->y, event->xrel, event->yrel, (event->state & SDL_BUTTON(SDL_BUTTON_LEFT)) ? 1 : 0, (event->state & SDL_BUTTON(SDL_BUTTON_MIDDLE)) ? 1 : 0, (event->state & SDL_BUTTON(SDL_BUTTON_RIGHT)) ? 1 : 0, vid_mouse_events.count, vid_cursor_x, vid_cursor_y);
     if (vid_mouse_events.count < MAX_EVENTS) {
         SIM_MOUSE_EVENT *tail = &vid_mouse_events.events[(vid_mouse_events.tail+MAX_EVENTS-1)%MAX_EVENTS];
 
@@ -1248,8 +1273,8 @@ if (SDL_SemWait (vid_mouse_events.sem) == 0) {
             tail->y_rel += ev.y_rel;
             tail->x_pos = ev.x_pos;
             tail->y_pos = ev.y_pos;
-            sim_debug (SIM_VID_DBG_MOUSE, vid_dev, "Mouse Move Event: Coalesced into pending event: (%d,%d) vid_mouse_rel:(%d,%d)\n", 
-                tail->x_rel, tail->y_rel, vid_mouse_xrel, vid_mouse_yrel);
+            sim_debug (SIM_VID_DBG_MOUSE, vid_dev, "Mouse Move Event: Coalesced into pending event: (%d,%d)\n", 
+                tail->x_rel, tail->y_rel);
             }
         else {                                          /* Add a new event */
             vid_mouse_events.events[vid_mouse_events.tail++] = ev;
@@ -1678,6 +1703,9 @@ while (vid_active) {
                              if (vid_flags & SIM_VID_INPUTCAPTURED)
                                  SDL_WarpMouseInWindow (NULL, vid_width/2, vid_height/2);   /* center position */
                             break;
+                        case SDL_WINDOWEVENT_EXPOSED:
+                            vid_update ();
+                            break;
                         }
                     }
                 break;
@@ -1777,14 +1805,20 @@ return 0;
 
 int vid_thread (void *arg)
 {
+int stat;
+
 #if SDL_MAJOR_VERSION == 1
 _XInitThreads();
-SDL_Init (SDL_INIT_VIDEO|SDL_INIT_NOPARACHUTE);
+stat = SDL_Init (SDL_INIT_VIDEO|SDL_INIT_NOPARACHUTE);
 #else
 SDL_SetHint (SDL_HINT_RENDER_DRIVER, "software");
 
-SDL_Init (SDL_INIT_VIDEO);
+stat = SDL_Init (SDL_INIT_VIDEO);
 #endif
+if (stat) {
+    sim_printf ("SDL Video subsystem can't initialize\n");
+    return 0;
+    }
 vid_beep_setup (400, 660);
 vid_video_events ();
 vid_beep_cleanup ();
@@ -1841,7 +1875,10 @@ fprintf (st, "  SDL Events being processed on the main process thread\n");
 #endif
 if (!vid_active) {
 #if !defined (SDL_MAIN_AVAILABLE)
-    SDL_Init(SDL_INIT_VIDEO);
+    int stat = SDL_Init(SDL_INIT_VIDEO);
+
+    if (stat)
+        return sim_messagef (SCPE_OPENERR, "SDL_Init() failed.  Video subsystem is unavailable.\n");
 #endif
     }
 else {
@@ -2119,10 +2156,16 @@ if (!filename)
     return SCPE_MEM;
 #if SDL_MAJOR_VERSION == 1
 #if defined(HAVE_LIBPNG)
-sprintf (fullname, "%s.png", filename);
-stat = SDL_SavePNG(vid_image, fullname);
+if (!match_ext (filename, "bmp")) {
+    sprintf (fullname, "%s%s", filename, match_ext (filename, "png") ? "" : ".png");
+    stat = SDL_SavePNG(vid_image, fullname);
+    }
+else {
+    sprintf (fullname, "%s", filename);
+    stat = SDL_SaveBMP(vid_image, fullname);
+    }
 #else
-sprintf (fullname, "%s.bmp", filename);
+sprintf (fullname, "%s%s", filename, match_ext (filename, "bmp") ? "" : ".bmp");
 stat = SDL_SaveBMP(vid_image, fullname);
 #endif /* defined(HAVE_LIBPNG) */
 #else /* SDL_MAJOR_VERSION != 1 */
@@ -2131,10 +2174,16 @@ if (1) {
                                    SDL_CreateRGBSurface(0, vid_width, vid_height, 32, 0x0000ff00, 0x000ff000, 0xff000000, 0x000000ff) ;
     SDL_RenderReadPixels(vid_renderer, NULL, SDL_PIXELFORMAT_ARGB8888, sshot->pixels, sshot->pitch);
 #if defined(HAVE_LIBPNG)
-    sprintf (fullname, "%s.png", filename);
-    stat = SDL_SavePNG(sshot, fullname);
+    if (!match_ext (filename, "bmp")) {
+        sprintf (fullname, "%s%s", filename, match_ext (filename, "png") ? "" : ".png");
+        stat = SDL_SavePNG(sshot, fullname);
+        }
+    else {
+        sprintf (fullname, "%s", filename);
+        stat = SDL_SaveBMP(sshot, fullname);
+        }
 #else
-    sprintf (fullname, "%s.bmp", filename);
+    sprintf (fullname, "%s%s", filename, match_ext (filename, "bmp") ? "" : ".bmp");
     stat = SDL_SaveBMP(sshot, fullname);
 #endif /* defined(HAVE_LIBPNG) */
     SDL_FreeSurface(sshot);

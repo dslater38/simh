@@ -132,7 +132,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
 #define ADDR_IS_ROM(x)  (0)
 #define ADDR_IS_NVR(x)  (0)
 
-/* Machine specific reserved operand tests (all NOPs) */
+/* Machine specific reserved operand tests (mostly NOPs) */
 
 #define ML_PA_TEST(r)
 #define ML_LR_TEST(r)
@@ -141,6 +141,8 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
 #define LP_AST_TEST(r)
 #define LP_MBZ84_TEST(r)
 #define LP_MBZ92_TEST(r)
+
+#define MT_AST_TEST(r)  if ((r) > AST_MAX) RSVD_OPND_FAULT
 
 /* Qbus I/O modes */
 
@@ -167,8 +169,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
 
 /* I/O system definitions */
 
-#define DZ_MUXES        4                               /* max # of DZV muxes */
-#define DZ_LINES        4                               /* lines per DZV mux */
+#define DZ_MUXES        4                               /* default # of DZV muxes */
 #define VH_MUXES        4                               /* max # of DHQ muxes */
 #define MT_MAXFR        (1 << 16)                       /* magtape max rec */
 
@@ -204,6 +205,8 @@ typedef struct {
                                                         /* where multiple instances are */
                                                         /* simulated through a single */
                                                         /* DEVICE structure (e.g., DZ, VH, DL, DC). */
+                                                        /* Populated by auto-configure */
+    DEVICE              *dptr;                          /* back pointer to related device */
                                                         /* Populated by auto-configure */
     } DIB;
 
@@ -326,12 +329,6 @@ typedef struct {
 #define CLR_INT(dv)     int_req[IPL_##dv] = int_req[IPL_##dv] & ~(INT_##dv)
 #define IORETURN(f,v)   ((f)? (v): SCPE_OK)             /* cond error return */
 extern int32 int_req[IPL_HLVL];                         /* intr, IPL 14-17 */
-
-/* Logging */
-
-#define LOG_CPU_I       0x1                             /* intexc */
-#define LOG_CPU_R       0x2                             /* REI */
-#define LOG_CPU_P       0x4                             /* context */
 
 /* System model */
 

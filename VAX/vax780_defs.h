@@ -1,6 +1,6 @@
 /* vax780_defs.h: VAX 780 model-specific definitions file
 
-   Copyright (c) 2004-2015, Robert M Supnik
+   Copyright (c) 2004-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   18-May-17    RMS     Added model-specific AST validation test
+   19-Jan-17    RMS     Moved CR to BR6 (Mark Pizzolato)
    29-Mar-15    RMS     Added model specific IPR max
    16-Dec-14    RMS     Removed TQ boot code (780 VMB doesn't support tape boot)
    05-Sep-14    RMS     Fixed SBR test (found by Mark Pizzolato)
@@ -153,6 +155,9 @@
 #define LP_MBZ84_TEST(r) if ((((uint32)(r)) & 0xF8C00000) != 0) RSVD_OPND_FAULT
 #define LP_MBZ92_TEST(r) if ((((uint32)(r)) & 0x7FC00000) != 0) RSVD_OPND_FAULT
 
+#define MT_AST_TEST(r)  r = (r) & 07; \
+                        if ((r) > AST_MAX) RSVD_OPND_FAULT
+
 /* Memory */
 
 #define MAXMEMWIDTH     23                              /* max mem, MS780C */
@@ -248,8 +253,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc
 
 /* I/O system definitions */
 
-#define DZ_MUXES        4                               /* max # of DZV muxes */
-#define DZ_LINES        8                               /* lines per DZV mux */
+#define DZ_MUXES        4                               /* default # of DZV muxes */
 #define VH_MUXES        4                               /* max # of DHU muxes */
 #define DLX_LINES       16                              /* max # of KL11/DL11's */
 #define DCX_LINES       16                              /* max # of DC11's */
@@ -301,6 +305,8 @@ typedef struct {
                                                         /* simulated through a single */
                                                         /* DEVICE structure (e.g., DZ, VH, DL, DC). */
                                                         /* Populated by auto-configure */
+    DEVICE              *dptr;                          /* back pointer to related device */
+                                                        /* Populated by auto-configure */
     } DIB;
 
 /* Unibus I/O page layout - see pdp11_io_lib.c for address layout details
@@ -310,8 +316,10 @@ typedef struct {
 
 
 /* Interrupt assignments; within each level, priority is right to left */
+/* CD11 must be defined but is not allowed in the configuration */
 
 #define INT_V_DTA       0                               /* BR6 */
+#define INT_V_CR        1
 
 #define INT_V_DZRX      0                               /* BR5 */
 #define INT_V_DZTX      1
@@ -327,17 +335,19 @@ typedef struct {
 #define INT_V_DUPRX     11
 #define INT_V_DUPTX     12
 #define INT_V_RK        13
+#define INT_V_CH        14
 
 #define INT_V_LPT       0                               /* BR4 */
 #define INT_V_PTR       1
 #define INT_V_PTP       2
-#define INT_V_CR        3
+//#define XXXXXXXX        3                             /* Former CR */
 #define INT_V_VHRX      4
 #define INT_V_VHTX      5
 #define INT_V_TDRX      6
 #define INT_V_TDTX      7
 
 #define INT_DTA         (1u << INT_V_DTA)
+#define INT_CR          (1u << INT_V_CR)
 #define INT_DZRX        (1u << INT_V_DZRX)
 #define INT_DZTX        (1u << INT_V_DZTX)
 #define INT_HK          (1u << INT_V_HK)
@@ -352,7 +362,6 @@ typedef struct {
 #define INT_VHTX        (1u << INT_V_VHTX)
 #define INT_PTR         (1u << INT_V_PTR)
 #define INT_PTP         (1u << INT_V_PTP)
-#define INT_CR          (1u << INT_V_CR)
 #define INT_DMCRX       (1u << INT_V_DMCRX)
 #define INT_DMCTX       (1u << INT_V_DMCTX)
 #define INT_DUPRX       (1u << INT_V_DUPRX)
@@ -360,8 +369,10 @@ typedef struct {
 #define INT_RK          (1u << INT_V_RK)
 #define INT_TDRX        (1u << INT_V_TDRX)
 #define INT_TDTX        (1u << INT_V_TDTX)
+#define INT_CH          (1u << INT_V_CH)
 
 #define IPL_DTA         (0x16 - IPL_HMIN)
+#define IPL_CR          (0x16 - IPL_HMIN)
 #define IPL_DZRX        (0x15 - IPL_HMIN)
 #define IPL_DZTX        (0x15 - IPL_HMIN)
 #define IPL_HK          (0x15 - IPL_HMIN)
@@ -371,10 +382,10 @@ typedef struct {
 #define IPL_TS          (0x15 - IPL_HMIN)
 #define IPL_RY          (0x15 - IPL_HMIN)
 #define IPL_XU          (0x15 - IPL_HMIN)
+#define IPL_CH          (0x15 - IPL_HMIN)
 #define IPL_LPT         (0x14 - IPL_HMIN)
 #define IPL_PTR         (0x14 - IPL_HMIN)
 #define IPL_PTP         (0x14 - IPL_HMIN)
-#define IPL_CR          (0x14 - IPL_HMIN)
 #define IPL_VHRX        (0x14 - IPL_HMIN)
 #define IPL_VHTX        (0x14 - IPL_HMIN)
 #define IPL_DMCRX       (0x15 - IPL_HMIN)
@@ -401,13 +412,6 @@ typedef struct {
 #define SET_INT(dv)     int_req[IPL_##dv] = int_req[IPL_##dv] | (INT_##dv)
 #define CLR_INT(dv)     int_req[IPL_##dv] = int_req[IPL_##dv] & ~(INT_##dv)
 #define IORETURN(f,v)   ((f)? (v): SCPE_OK)             /* cond error return */
-extern int32 int_req[IPL_HLVL];                         /* intr, IPL 14-17 */
-
-/* Logging */
-
-#define LOG_CPU_I       0x1                             /* intexc */
-#define LOG_CPU_R       0x2                             /* REI */
-#define LOG_CPU_P       0x4                             /* context */
 
 /* Massbus definitions */
 

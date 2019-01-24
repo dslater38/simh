@@ -196,7 +196,7 @@ int32 col, rpt, ptr, mask, cctbuf[CCT_LNT];
 t_stat r;
 extern int32 lpt_ccl, lpt_ccp;
 extern uint8 lpt_cct[CCT_LNT];
-const char *cptr;
+CONST char *cptr;
 char cbuf[CBUFSIZE], gbuf[CBUFSIZE];
 
 ptr = 0;
@@ -474,8 +474,6 @@ static const char *chname[] = {
         *of     =       output stream
         inst    =       mask bits
 */
-
-#define fprintf Fprintf /* Use scp.c provided fprintf function */
 
 void fprint_reg (FILE *of, int32 inst)
 {

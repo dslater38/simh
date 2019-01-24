@@ -84,7 +84,8 @@ if (((ipaddrstr = strchr(gbuf, ':')) == NULL) || (*(ipaddrstr+1) == 0)) {
     }
 *ipaddrstr++ = 0;
 
-if (((portstr = strchr (ipaddrstr, ':')) == NULL) || (*(portstr+1) == 0)) {
+if ((ipaddrstr) && 
+    (((portstr = strchr (ipaddrstr, ':')) == NULL) || (*(portstr+1) == 0))) {
     sim_printf ("redir %s syntax error\n", tcpudp[is_udp]);
     return -1;
     }
@@ -314,7 +315,7 @@ if (err) {
     return NULL;
     }
 
-slirp->vnetmask.s_addr = htonl(~((1 << (32-slirp->maskbits)) - 1));
+slirp->vnetmask.s_addr = slirp->maskbits ? htonl(~((1 << (32-slirp->maskbits)) - 1)) : 0xFFFFFFFF;
 slirp->vnetwork.s_addr = slirp->vgateway.s_addr & slirp->vnetmask.s_addr;
 if ((slirp->vgateway.s_addr & ~slirp->vnetmask.s_addr) == 0)
     slirp->vgateway.s_addr = htonl(ntohl(slirp->vnetwork.s_addr) | 2);
@@ -413,12 +414,16 @@ fprintf (st, "%s",
 "    DNSSEARCH=domain{:domain{:domain}}  specifies DNS Domains search suffixes\n"
 "    GATEWAY=host_ipaddress{/masklen}    specifies LAN gateway IP address\n"
 "    NETWORK=network_ipaddress{/masklen} specifies LAN network address\n"
-"    UDP=port:address:internal-port      maps host UDP port to guest port\n"
-"    TCP=port:address:internal-port      maps host TCP port to guest port\n"
-"    NODHCP                              disables DHCP server\n"
+"    UDP=port:address:address's-port     maps host UDP port to guest port\n"
+"    TCP=port:address:address's-port     maps host TCP port to guest port\n"
+"    NODHCP                              disables DHCP server\n\n"
 "Default NAT Options: GATEWAY=10.0.2.2, masklen=24(netmask is 255.255.255.0)\n"
 "                     DHCP=10.0.2.15, NAMESERVER=10.0.2.3\n"
 "    Nameserver defaults to proxy traffic to host system's active nameserver\n\n"
+"The 'address' field in the UDP and TCP port mappings are the simulated\n"
+"(guest) system's IP address which, if DHCP allocated would default to\n"
+"10.0.2.15 or could be statically configured to any address including\n"
+"10.0.2.4 thru 10.0.2.14.\n\n"
 "NAT limitations\n\n"
 "There are four limitations of NAT mode which users should be aware of:\n\n"
 " 1) ICMP protocol limitations:\n"
@@ -612,7 +617,7 @@ if (select_ret) {
     if (FD_ISSET (slirp->db_chime, &rfds)) {
         char buf[32];
         /* consume the doorbell wakeup ring */
-        recv (slirp->db_chime, buf, sizeof (buf), 0);
+        (void)recv (slirp->db_chime, buf, sizeof (buf), 0);
         }
     sim_debug (slirp->dbit, slirp->dptr, "Select returned %d\r\n", select_ret);
     for (i=0; i<nfds+1; i++) {

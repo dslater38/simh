@@ -25,6 +25,13 @@
 
    MPX          HP 3000 Series III Multiplexer Channel
 
+   24-Oct-16    JDB     Renamed SEXT macro to SEXT16
+   12-Sep-16    JDB     Changed DIB register macro usage from SRDATA to DIB_REG
+   15-Jul-16    JDB     Fixed the word count display for DREADSTB trace
+   08-Jun-16    JDB     Corrected %d format to %u for unsigned values
+   07-Jun-16    JDB     Corrected ACKSR assertion in State A for chained orders
+   16-May-16    JDB     abort_channel parameter is now a pointer-to-constant
+   21-Mar-16    JDB     Changed uint16 types to HP_WORD
    06-Oct-15    JDB     First release version
    11-Sep-14    JDB     Passes the multiplexer channel diagnostic (D422A)
    10-Feb-13    JDB     Created
@@ -316,10 +323,21 @@
 
 
 #include "hp3000_defs.h"
-#include "hp3000_cpu.h"
 #include "hp3000_cpu_ims.h"
 #include "hp3000_io.h"
+#include "hp3000_mem.h"
 
+
+
+/* IOP device */
+
+extern DEVICE iop_dev;                          /* I/O Processor */
+
+
+/* Memory access macros */
+
+#define iop_read_memory(c,o,v)      mem_read  (&iop_dev, c, o, v)
+#define iop_write_memory(c,o,v)     mem_write (&iop_dev, c, o, v)
 
 
 /* Program constants.
@@ -396,11 +414,11 @@ static const uint8 state_parity [16] = {        /* State RAM parity */
 
 /* Debug flags */
 
-#define DEB_CSRW        (1 << 0)                /* trace diagnostic and channel command initiations and completions */
-#define DEB_PIO         (1 << 1)                /* trace programmed I/O commands */
-#define DEB_IOB         (1 << 2)                /* trace I/O bus signals and data words */
-#define DEB_STATE       (1 << 3)                /* trace state changes */
-#define DEB_SR          (1 << 4)                /* trace service requests */
+#define DEB_CSRW        (1u << 0)               /* trace diagnostic and channel command initiations and completions */
+#define DEB_PIO         (1u << 1)               /* trace programmed I/O commands */
+#define DEB_IOB         (1u << 2)               /* trace I/O bus signals and data words */
+#define DEB_STATE       (1u << 3)               /* trace state changes */
+#define DEB_SR          (1u << 4)               /* trace service requests */
 
 
 /* Control word.
@@ -411,13 +429,13 @@ static const uint8 state_parity [16] = {        /* State RAM parity */
      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 */
 
-#define CN_MR               0100000             /* (M) master reset */
-#define CN_RAM_ADDR_MASK    0036000             /* RAM address mask */
-#define CN_ADDR_RAM         0001000             /* (A) select the address RAM and register */
-#define CN_ORDER_RAM        0000400             /* (O) select the order RAM and register */
-#define CN_STATE_RAM        0000200             /* (S) select the state RAM and register */
-#define CN_LOAD_REGS        0000100             /* (L) load registers from RAM */
-#define CN_INCR_REGS        0000040             /* (I) increment registers */
+#define CN_MR               0100000u            /* (M) master reset */
+#define CN_RAM_ADDR_MASK    0036000u            /* RAM address mask */
+#define CN_ADDR_RAM         0001000u            /* (A) select the address RAM and register */
+#define CN_ORDER_RAM        0000400u            /* (O) select the order RAM and register */
+#define CN_STATE_RAM        0000200u            /* (S) select the state RAM and register */
+#define CN_LOAD_REGS        0000100u            /* (L) load registers from RAM */
+#define CN_INCR_REGS        0000040u            /* (I) increment registers */
 
 #define CN_RAM_ADDR_SHIFT   10                  /* RAM address alignment shift */
 
@@ -449,9 +467,9 @@ static const BITSET_FORMAT control_format =     /* names, offset, direction, alt
      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 */
 
-#define ST_DIO_OK           0040000             /* (D) direct I/O OK (always set) */
-#define ST_STATE_PARITY     0010000             /* (E) a state error exists */
-#define ST_RAM_ADDR_MASK    0007400             /* RAM address mask */
+#define ST_DIO_OK           0040000u            /* (D) direct I/O OK (always set) */
+#define ST_STATE_PARITY     0010000u            /* (E) a state error exists */
+#define ST_RAM_ADDR_MASK    0007400u            /* RAM address mask */
 
 #define ST_RAM_ADDR_SHIFT   8                   /* RAM address alignment shift */
 
@@ -481,10 +499,10 @@ static const BITSET_FORMAT status_format =      /* names, offset, direction, alt
      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 */
 
-#define WR_ORDER_MASK       0170000             /* order mask */
-#define WR_COUNT_MASK       0007777             /* word count mask */
-#define WR_STATE_MASK       0036000             /* state mask */
-#define WR_BANK_MASK        0000017             /* bank number mask */
+#define WR_ORDER_MASK       0170000u            /* order mask */
+#define WR_COUNT_MASK       0007777u            /* word count mask */
+#define WR_STATE_MASK       0036000u            /* state mask */
+#define WR_BANK_MASK        0000017u            /* bank number mask */
 
 #define WR_ORDER_SHIFT      12                  /* order alignment shift */
 #define WR_COUNT_SHIFT      0                   /* word count alignment shift */
@@ -509,15 +527,15 @@ static const BITSET_FORMAT status_format =      /* names, offset, direction, alt
      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 */
 
-#define RD_ADDR_MASK        0177777             /* address mask */
-#define RD_ORDER_MASK       0170000             /* order mask */
-#define RD_COUNT_MASK       0007777             /* word count mask */
-#define RD_BANK_MASK        0007400             /* bank number mask */
-#define RD_XFER_COMPLETE    0000200             /* (T) transfer complete */
-#define RD_STATE_MASK       0000170             /* (A/B/C/D) state mask */
-#define RD_XFER_END         0000004             /* (E) end of transfer */
-#define RD_ADDR_PARITY      0000002             /* (P) address parity */
-#define RD_STATE_PARITY     0000001             /* (S) state parity */
+#define RD_ADDR_MASK        0177777u            /* address mask */
+#define RD_ORDER_MASK       0170000u            /* order mask */
+#define RD_COUNT_MASK       0007777u            /* word count mask */
+#define RD_BANK_MASK        0007400u            /* bank number mask */
+#define RD_XFER_COMPLETE    0000200u            /* (T) transfer complete */
+#define RD_STATE_MASK       0000170u            /* (A/B/C/D) state mask */
+#define RD_XFER_END         0000004u            /* (E) end of transfer */
+#define RD_ADDR_PARITY      0000002u            /* (P) address parity */
+#define RD_STATE_PARITY     0000001u            /* (S) state parity */
 
 #define RD_ORDER_SHIFT      12                  /* order alignment shift */
 #define RD_COUNT_SHIFT      0                   /* word count alignment shift */
@@ -588,17 +606,17 @@ static const BITSET_FORMAT read_format =        /* names, offset, direction, alt
      +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 */
 
-#define AUX_IB              040                 /* auxiliary RAM in-block flag */
-#define AUX_TC              020                 /* auxiliary RAM terminal count flag */
-#define AUX_BANK_MASK       017                 /* auxiliary RAM bank mask */
+#define AUX_IB              040u                /* auxiliary RAM in-block flag */
+#define AUX_TC              020u                /* auxiliary RAM terminal count flag */
+#define AUX_BANK_MASK       017u                /* auxiliary RAM bank mask */
 
 #define AUX_BANK(r)         ((r) & AUX_BANK_MASK)
 
-#define ORDER_DC            020                 /* order RAM data chain flag */
-#define ORDER_MASK          017                 /* order RAM current order mask */
+#define ORDER_DC            020u                /* order RAM data chain flag */
+#define ORDER_MASK          017u                /* order RAM current order mask */
 
-#define CNTR_MASK           0007777             /* counter RAM word count mask */
-#define CNTR_MAX            0007777             /* counter RAM word count maximum value */
+#define CNTR_MASK           0007777u            /* counter RAM word count mask */
+#define CNTR_MAX            0007777u            /* counter RAM word count maximum value */
 
 static const BITSET_NAME aux_names [] = {       /* Auxiliary RAM word */
     "in block",                                 /* bit  2 */
@@ -667,7 +685,7 @@ static t_stat      mpx_reset     (DEVICE *dptr);
 
 static uint8        next_state    (uint8 current_state, SIO_ORDER order, t_bool abort);
 static void         end_channel   (DIB   *dibptr);
-static SIGNALS_DATA abort_channel (DIB   *dibptr, char *reason);
+static SIGNALS_DATA abort_channel (DIB   *dibptr, const char *reason);
 
 
 /* Channel SCP data structures */
@@ -683,11 +701,13 @@ static DIB mpx_dib = {
     INTMASK_UNUSED                              /* interrupt mask */
     };
 
+
 /* Unit list */
 
 static UNIT mpx_unit [] = {                     /* a dummy unit to satisfy SCP requirements */
     { UDATA (NULL, 0, 0) }
     };
+
 
 /* Register list.
 
@@ -703,33 +723,34 @@ static UNIT mpx_unit [] = {                     /* a dummy unit to satisfy SCP r
 */
 
 static REG mpx_reg [] = {
-/*    Macro   Name    Location       Radix  Width     Depth           Flags       */
-/*    ------  ------  -------------  -----  -----  -----------  ----------------- */
-    { FLDATA (IDLE,   mpx_is_idle,            0)                                  },
-    { DRDATA (COUNT,  active_count,          32),               PV_LEFT           },
-    { DRDATA (EXCESS, excess_cycles,         32),               PV_LEFT           },
+/*    Macro   Name    Location       Radix  Width     Depth           Flags        */
+/*    ------  ------  -------------  -----  -----  -----------  -----------------  */
+    { FLDATA (IDLE,   mpx_is_idle,            0)                                   },
+    { DRDATA (COUNT,  active_count,          32),               PV_LEFT            },
+    { DRDATA (EXCESS, excess_cycles,         32),               PV_LEFT            },
 
-    { ORDATA (CNTL,   control_word,          16),               REG_FIT           },
-    { ORDATA (STAT,   status_word,           16),               REG_FIT           },
-    { FLDATA (ROLOVR, rollover,               0)                                  },
-    { FLDATA (DEVEND, device_end,             0)                                  },
+    { ORDATA (CNTL,   control_word,          16),               REG_FIT            },
+    { ORDATA (STAT,   status_word,           16),               REG_FIT            },
+    { FLDATA (ROLOVR, rollover,               0)                                   },
+    { FLDATA (DEVEND, device_end,             0)                                   },
 
-    { BRDATA (STATR,  state_ram,       2,     4,   INTRF_COUNT)                   },
-    { BRDATA (AUX,    aux_ram,         8,     6,   INTRF_COUNT)                   },
-    { BRDATA (ORDER,  order_ram,       8,     4,   INTRF_COUNT)                   },
-    { BRDATA (CNTR,   cntr_ram,        8,    12,   INTRF_COUNT)                   },
-    { BRDATA (ADDR,   addr_ram,        8,    16,   INTRF_COUNT)                   },
+    { BRDATA (STATR,  state_ram,       2,     4,   INTRF_COUNT)                    },
+    { BRDATA (AUX,    aux_ram,         8,     6,   INTRF_COUNT)                    },
+    { BRDATA (ORDER,  order_ram,       8,     4,   INTRF_COUNT)                    },
+    { BRDATA (CNTR,   cntr_ram,        8,    12,   INTRF_COUNT)                    },
+    { BRDATA (ADDR,   addr_ram,        8,    16,   INTRF_COUNT)                    },
 
-    { ORDATA (STAREG, state_reg,              8),               REG_FIT | REG_HRO },
-    { ORDATA (AUXREG, aux_reg,                8),               REG_FIT | REG_HRO },
-    { ORDATA (ORDREG, order_reg,              8),               REG_FIT | REG_HRO },
-    { ORDATA (CTRREG, cntr_reg,              16),               REG_FIT | REG_HRO },
-    { ORDATA (ADRREG, addr_reg,              16),               REG_FIT | REG_HRO },
+    { ORDATA (STAREG, state_reg,              8),               REG_FIT | REG_HRO  },
+    { ORDATA (AUXREG, aux_reg,                8),               REG_FIT | REG_HRO  },
+    { ORDATA (ORDREG, order_reg,              8),               REG_FIT | REG_HRO  },
+    { ORDATA (CTRREG, cntr_reg,              16),               REG_FIT | REG_HRO  },
+    { ORDATA (ADRREG, addr_reg,              16),               REG_FIT | REG_HRO  },
 
-    { SRDATA (DIB,    mpx_dib),                                           REG_HRO },
+      DIB_REGS (mpx_dib),
 
     { NULL }
     };
+
 
 /* Modifier list */
 
@@ -739,6 +760,7 @@ static MTAB mpx_mod [] = {
     { MTAB_XDV,    VAL_DEVNO, "DEVNO",      "DEVNO",      &hp_set_dib, &hp_show_dib, (void *) &mpx_dib },
     { 0 }
     };
+
 
 /* Debugging trace list */
 
@@ -750,6 +772,7 @@ static DEBTAB mpx_deb [] = {
     { "IOBUS", DEB_IOB   },                     /* interface I/O bus signals and data words */
     { NULL,    0         }
     };
+
 
 /* Device descriptor */
 
@@ -856,7 +879,7 @@ void mpx_assert_REQ (DIB *dibptr)
 {
 const uint32 srn = dibptr->service_request_number;      /* get the SR number for the RAM index */
 
-dprintf (mpx_dev, DEB_CSRW, "Device number %d asserted REQ for channel initialization\n",
+dprintf (mpx_dev, DEB_CSRW, "Device number %u asserted REQ for channel initialization\n",
          dibptr->device_number);
 
 state_ram [srn] = State_C;                              /* set up the initial sequencer state */
@@ -893,7 +916,7 @@ return;
 void mpx_assert_SRn (DIB *dibptr)
 {
 if (dibptr->service_request == FALSE)
-    dprintf (mpx_dev, DEB_SR, "Device number %d asserted SR%d\n",
+    dprintf (mpx_dev, DEB_SR, "Device number %u asserted SR%u\n",
              dibptr->device_number, dibptr->service_request_number);
 
 dibptr->service_request = TRUE;                         /* set the service request flag */
@@ -952,7 +975,10 @@ return;
    All I/O orders except Set Bank, Read, and Write execute states C, A, and B,
    in that order.  The Set Bank order executes state C, A, and D.  The Read and
    Write orders execute states C, A, B, and then one D state for each word
-   transferred.  Some actions are dependent on external signals or conditions.
+   transferred.  Some actions are dependent on external signals (JMPMET or
+   DEVEND) or internal conditions (terminal count reached [TC] or in a chained
+   block transfer [IB]).
+
    The actions for the orders are:
 
      Jump (sioJUMP)
@@ -965,7 +991,7 @@ return;
          C                     IOPP write  DEVNODB
 
 
-     Jump Conditional (sioJUMPC)
+     Conditional Jump (sioJUMPC)
 
        State  Condition        Action      Signals
        -----  ---------------  ----------  ------------------------------------------
@@ -1012,7 +1038,7 @@ return;
        -----  ---------------  ----------  ------------------------------------------
          C                     IOPP read   DEVNODB
          A                     IOCW read   --
-         B                     IOAW write  TOGGLESIOOK | TOGGLESR | PSTATSTB
+         B                     IOAW write  TOGGLESR | PSTATSTB | TOGGLESIOOK
        idle
 
 
@@ -1022,7 +1048,7 @@ return;
        -----  ---------------  ----------  ------------------------------------------
          C                     IOPP read   DEVNODB
          A                     IOCW read   --
-         B                     IOAW write  TOGGLESIOOK | TOGGLESR | PSTATSTB | SETINT
+         B                     IOAW write  TOGGLESR | SETINT | PSTATSTB | TOGGLESIOOK
        idle
 
 
@@ -1030,10 +1056,10 @@ return;
 
        State  Condition        Action      Signals
        -----  ---------------  ----------  ------------------------------------------
-         C                     IOPP read   DEVNODB | ACKSR | TOGGLESR
-         A                     IOCW read   PCMD1 | TOGGLESR
+         C                     IOPP read   DEVNODB
+         A                     IOCW read   TOGGLESR | PCMD1
          B                     IOAW read   ACKSR | PCONTSTB
-         C                     IOPP read   DEVNODB | TOGGLESR
+         C                     IOPP read   ACKSR | TOGGLESR | DEVNODB
 
 
      Sense (sioSENSE)
@@ -1057,11 +1083,12 @@ return;
 
        / D    ~ TC             data write  ACKSR | PWRITESTB
        \ D      TC             data write  ACKSR | PWRITESTB | EOT | TOGGLEOUTXFER
-       / D      DEVEND * ~ TC  IOPP read   EOT | TOGGLESR | TOGGLEOUTXFER
-       \ D      DEVEND *   TC  IOPP read   TOGGLESR
+       / D      DEVEND * ~ TC  IOPP read   ACKSR | TOGGLESR | EOT | TOGGLEOUTXFER
+       \ D      DEVEND *   TC  IOPP read   ACKSR | TOGGLESR
 
-       / C    ~ DEVEND         IOPP read   ACKSR | DEVNODB | TOGGLESR
-       \ A      DEVEND         IOCW read   --
+       / C    ~ DEVEND         IOPP read   ACKSR | TOGGLESR | DEVNODB
+       / A    ~ DEVEND         IOCW read   ACKSR
+       \ A      DEVEND         IOCW read   ACKSR
 
 
      Write Chained (sioWRITEC)
@@ -1074,8 +1101,8 @@ return;
        \ B      IB             IOAW read   TOGGLESR
 
        / D    ~ TC             data write  ACKSR | PWRITESTB
-       \ D      TC             data write  ACKSR | PWRITESTB | EOT | TOGGLESR
-       / D      DEVEND * ~ TC  IOPP read   EOT | TOGGLESR
+       \ D      TC             data write  ACKSR | TOGGLESR | PWRITESTB | EOT
+       / D      DEVEND * ~ TC  IOPP read   ACKSR | EOT | TOGGLESR
        \ D      DEVEND *   TC  IOPP read   --
 
        / C    ~ DEVEND         IOPP read   DEVNODB
@@ -1087,17 +1114,18 @@ return;
        State  Condition        Action      Signals
        -----  ---------------  ----------  ------------------------------------------
          C                     IOPP read   DEVNODB
-         A                     IOCW read   ACKSR
-       / B    ~ IB             IOAW read   READNEXTWD | TOGGLESR | TOGGLEINXFER
-       \ B      IB             IOAW read   READNEXTWD | TOGGLESR
+         A                     IOCW read   --
+       / B    ~ IB             IOAW read   TOGGLESR | TOGGLEINXFER | READNEXTWD
+       \ B      IB             IOAW read   TOGGLESR | READNEXTWD
 
        / D    ~ TC             data write  ACKSR | PREADSTB | READNEXTWD
        \ D      TC             data write  ACKSR | PREADSTB | EOT | TOGGLEINXFER
-       / D      DEVEND * ~ TC  IOPP read   EOT | TOGGLESR | TOGGLEINXFER
-       \ D      DEVEND *   TC  IOPP read   TOGGLESR
+       / D      DEVEND * ~ TC  IOPP read   ACKSR | TOGGLESR | EOT | TOGGLEINXFER
+       \ D      DEVEND *   TC  IOPP read   ACKSR | TOGGLESR
 
-       / C    ~ DEVEND         IOPP read   ACKSR | DEVNODB | TOGGLESR
-       \ A      DEVEND         IOCW read   --
+       / C    ~ DEVEND         IOPP read   ACKSR | TOGGLESR | DEVNODB
+       / A    ~ DEVEND         IOCW read   ACKSR
+       \ A      DEVEND         IOCW read   ACKSR
 
 
      Read Chained (sioREADC)
@@ -1106,16 +1134,17 @@ return;
        -----  ---------------  ----------  ------------------------------------------
          C                     IOPP read   DEVNODB
          A                     IOCW read   --
-       / B    ~ IB             IOAW read   READNEXTWD | TOGGLESR | TOGGLEINXFER
-       \ B      IB             IOAW read   READNEXTWD | TOGGLESR
+       / B    ~ IB             IOAW read   TOGGLESR | TOGGLEINXFER | READNEXTWD
+       \ B      IB             IOAW read   TOGGLESR | READNEXTWD
 
        / D    ~ TC             data write  ACKSR | PREADSTB | READNEXTWD
-       \ D      TC             data write  ACKSR | PREADSTB | EOT | TOGGLESR
-       / D      DEVEND * ~ TC  IOPP read   EOT | TOGGLESR
+       \ D      TC             data write  ACKSR | TOGGLESR | PREADSTB | EOT
+       / D      DEVEND * ~ TC  IOPP read   ACKSR | TOGGLESR | EOT
        \ D      DEVEND *   TC  IOPP read   --
 
        / C    ~ DEVEND         IOPP read   DEVNODB
        \ A      DEVEND         IOCW read   --
+
 
    Summarizing the State D signals sent to the interface:
 
@@ -1127,9 +1156,9 @@ return;
 
      DEVEND asserted after a normal transfer
      ---------------------------------------
-       - not the last word and not chained:  EOT | TOGGLESR | TOGGLEioXFER
-       - not the last word and chained:      EOT | TOGGLESR
-       - the last word and not chained:      TOGGLESR
+       - not the last word and not chained:  ACKSR | TOGGLESR | EOT | TOGGLEioXFER
+       - not the last word and chained:      ACKSR | TOGGLESR | EOT
+       - the last word and not chained:      ACKSR | TOGGLESR
        - the last word and chained:          (none)
 
    In all cases where signals are generated, CHANSO is also included.
@@ -1198,39 +1227,43 @@ while (cycles > 0) {                                    /* execute as long as cy
         cntr_reg  = cntr_ram  [srn];
         addr_reg  = addr_ram  [srn];
 
-        sio_order = order_reg & ORDER_MASK;             /* map the order */
+        sio_order = (SIO_ORDER) (order_reg & ORDER_MASK);   /* map the order */
         }
 
-    dprintf (mpx_dev, DEB_STATE, "Channel SR %d entered %s with %d clock cycles remaining\n",
+    dprintf (mpx_dev, DEB_STATE, "Channel SR %u entered %s with %d clock cycles remaining\n",
              srn, state_name [state_reg], cycles);
 
     switch (state_reg) {                                /* dispatch based on the multiplexer state */
 
         case State_A:
-            cpu_read_memory (absolute_iop, addr_reg, &iocw);    /* fetch the IOCW from memory */
-            cycles = cycles - CYCLES_PER_READ;                  /*   and count the memory access */
+            if (sio_order == sioREAD                    /* if the previous order */
+              || sio_order == sioWRITE)                 /*   was an unchained Read or Write */
+                inbound_signals = ACKSR | CHANSO;       /*     then acknowledge the final service request */
+            else                                        /* otherwise */
+                inbound_signals = NO_SIGNALS;           /*   no acknowledgement is needed */
+
+            iop_read_memory (absolute, addr_reg, &iocw);    /* fetch the IOCW from memory */
+            cycles = cycles - CYCLES_PER_READ;              /*   and count the memory access */
 
             order_reg = IOCW_ORDER (iocw);              /* get the translated order from the IOCW */
 
             if (iocw & IOCW_DC)                         /* if the data chain bit is set */
                 order_reg |= ORDER_DC;                  /*   then set the data chain flag */
 
-            sio_order = order_reg & ORDER_MASK;         /* isolate the I/O order */
+            sio_order = (SIO_ORDER) (order_reg & ORDER_MASK);   /* isolate the I/O order */
 
             if (sio_order != sioRTRES)                  /* if this is not a Return Residue order */
                 cntr_reg = IOCW_WCNT (iocw);            /*   then load the word count */
 
-            dprintf (mpx_dev, DEB_PIO, "Channel SR %d loaded IOCW %06o (%s) from address %06o\n",
+            dprintf (mpx_dev, DEB_PIO, "Channel SR %u loaded IOCW %06o (%s) from address %06o\n",
                      srn, iocw, sio_order_name [sio_order], addr_reg);
 
-            if (sio_order == sioCNTL)                   /* assert the proper signals for a Control order */
-                outbound = dibptr->io_interface (dibptr, PCMD1 | TOGGLESR | CHANSO, iocw);
+            if (sio_order == sioCNTL)                           /* if this a Control order */
+                inbound_signals |= PCMD1 | TOGGLESR | CHANSO;   /*   then assert the first command strobe */
 
-            else if (sio_order == sioREAD               /* otherwise assert the proper signals */
-              || sio_order == sioWRITE)                 /*   for an unchained Read or Write order */
-                outbound = dibptr->io_interface (dibptr, ACKSR | CHANSO, iocw);
-
-            else                                        /* otherwise no assertion is needed */
+            if (inbound_signals)                        /* call the interface if there are signals to assert */
+                outbound = dibptr->io_interface (dibptr, inbound_signals, iocw);
+            else                                        /* otherwise the interface isn't involved */
                 outbound = IORETURN (SRn, 0);           /*   but assert a service request to continue the program */
 
             addr_reg = addr_reg + 1 & R_MASK;           /* point at the IOAW program word */
@@ -1305,27 +1338,27 @@ while (cycles > 0) {                                    /* execute as long as cy
                     break;
                 }
 
-            if (store_ioaw == FALSE) {                              /* if a fetch is needed */
-                cpu_read_memory (absolute_iop, addr_reg, &ioaw);    /*   then load the IOAW from memory */
-                cycles = cycles - CYCLES_PER_READ;                  /*     and count the memory access */
+            if (store_ioaw == FALSE) {                          /* if a fetch is needed */
+                iop_read_memory (absolute, addr_reg, &ioaw);    /*   then load the IOAW from memory */
+                cycles = cycles - CYCLES_PER_READ;              /*     and count the memory access */
 
-                dprintf (mpx_dev, DEB_PIO, "Channel SR %d loaded IOAW %06o from address %06o\n",
+                dprintf (mpx_dev, DEB_PIO, "Channel SR %u loaded IOAW %06o from address %06o\n",
                          srn, ioaw, addr_reg);
                 }
 
-            else                                                    /* otherwise provide a dummy value */
-                ioaw = 0;                                           /*   that will be overwritten */
+            else                                                /* otherwise provide a dummy value */
+                ioaw = 0;                                       /*   that will be overwritten */
 
-            if (inbound_signals)                                    /* if there are signals to assert */
-                outbound = dibptr->io_interface (dibptr,            /*   then pass them to the interface */
+            if (inbound_signals)                                /* if there are signals to assert */
+                outbound = dibptr->io_interface (dibptr,        /*   then pass them to the interface */
                                                  inbound_signals, ioaw);
 
-            if (store_ioaw == TRUE) {                               /* if a store is needed */
-                ioaw = IODATA (outbound);                           /*   then set the IOAW from the returned value */
-                cpu_write_memory (absolute_iop, addr_reg, ioaw);    /*     and store it in memory */
-                cycles = cycles - CYCLES_PER_WRITE;                 /* count the memory access */
+            if (store_ioaw == TRUE) {                           /* if a store is needed */
+                ioaw = IODATA (outbound);                       /*   then set the IOAW from the returned value */
+                iop_write_memory (absolute, addr_reg, ioaw);    /*     and store it in memory */
+                cycles = cycles - CYCLES_PER_WRITE;             /* count the memory access */
 
-                dprintf (mpx_dev, DEB_PIO, "Channel SR %d stored IOAW %06o to address %06o\n",
+                dprintf (mpx_dev, DEB_PIO, "Channel SR %u stored IOAW %06o to address %06o\n",
                          srn, ioaw, addr_reg);
                 }
 
@@ -1348,7 +1381,7 @@ while (cycles > 0) {                                    /* execute as long as cy
                 case sioENDIN:
                     end_channel (dibptr);               /* end the channel program */
 
-                    dprintf (mpx_dev, DEB_STATE, "Channel SR %d entered the %s\n",
+                    dprintf (mpx_dev, DEB_STATE, "Channel SR %u entered the %s\n",
                              srn, state_name [State_Idle]);
                     break;
 
@@ -1372,15 +1405,15 @@ while (cycles > 0) {                                    /* execute as long as cy
 
             outbound = dibptr->io_interface (dibptr, inbound_signals, 0);
 
-            if (sio_order != sioJUMP                                            /* if we're not completing */
-              && (sio_order != sioJUMPC || (outbound & JMPMET) == 0)) {         /*   a successful jump order */
-                cpu_read_memory (absolute_iop, IODATA (outbound), &addr_reg);   /*     then get the I/O program pointer */
-                cycles = cycles - CYCLES_PER_READ;                              /*       and count the memory access */
+            if (sio_order != sioJUMP                                        /* if we're not completing */
+              && (sio_order != sioJUMPC || (outbound & JMPMET) == 0)) {     /*   a successful jump order */
+                iop_read_memory (absolute, IODATA (outbound), &addr_reg);   /*     then get the I/O program pointer */
+                cycles = cycles - CYCLES_PER_READ;                          /*       and count the memory access */
                 }
 
-            cpu_write_memory (absolute_iop, IODATA (outbound),  /* write the updated program pointer */
-                              addr_reg + 2 & R_MASK);           /*   back to the DRT */
-            cycles = cycles - CYCLES_PER_WRITE;                 /*     and count the access */
+            iop_write_memory (absolute, IODATA (outbound),  /* write the updated program pointer */
+                              addr_reg + 2 & R_MASK);       /*   back to the DRT */
+            cycles = cycles - CYCLES_PER_WRITE;             /*     and count the access */
 
             break;
 
@@ -1388,11 +1421,11 @@ while (cycles > 0) {                                    /* execute as long as cy
         case State_D:
             inbound_data = 0;                                   /* assume there is no inbound data */
 
-            if (sio_order == sioSBANK) {                            /* if this is a Set Bank order */
-                cpu_read_memory (absolute_iop, addr_reg, &ioaw);    /*   then read the IOAW */
-                cycles = cycles - CYCLES_PER_READ;                  /*     and count the memory access */
+            if (sio_order == sioSBANK) {                        /* if this is a Set Bank order */
+                iop_read_memory (absolute, addr_reg, &ioaw);    /*   then read the IOAW */
+                cycles = cycles - CYCLES_PER_READ;              /*     and count the memory access */
 
-                dprintf (mpx_dev, DEB_PIO, "Channel SR %d loaded IOAW %06o from address %06o\n",
+                dprintf (mpx_dev, DEB_PIO, "Channel SR %u loaded IOAW %06o from address %06o\n",
                          srn, ioaw, addr_reg);
 
                 addr_reg = ioaw;                        /* store the IOAW into the address register */
@@ -1428,7 +1461,7 @@ while (cycles > 0) {                                    /* execute as long as cy
                     else                                        /*   otherwise */
                         inbound_signals |= EOT | TOGGLEOUTXFER; /*     assert EOT and end the transfer */
 
-                if (cpu_read_memory (dma_iop,                               /* read the word from memory */
+                if (iop_read_memory (dma,                                   /* read the word from memory */
                                      TO_PA (AUX_BANK (aux_reg), addr_reg),  /*   at the indicated bank and offset */
                                      &inbound_data))                        /* if the read succeeds */
                     cycles = cycles - CYCLES_PER_READ;                      /*   then count the memory access */
@@ -1446,19 +1479,19 @@ while (cycles > 0) {                                    /* execute as long as cy
             if (device_end == SET) {                            /* if the transfer was aborted by the interface */
                 outbound_data = IODATA (outbound);              /*   then it returned the DRT program pointer address */
 
-                cpu_read_memory (absolute_iop, outbound_data, &addr_reg);   /* do the I/O program pointer fetch here */
-                cpu_write_memory (absolute_iop, outbound_data,              /*   so we don't have to do State C */
+                iop_read_memory (absolute, outbound_data, &addr_reg);   /* do the I/O program pointer fetch here */
+                iop_write_memory (absolute, outbound_data,              /*   so we don't have to do State C */
                                   addr_reg + 2 & R_MASK);
-                cycles = cycles - CYCLES_PER_READ - CYCLES_PER_WRITE;       /* count the two memory accesses */
+                cycles = cycles - CYCLES_PER_READ - CYCLES_PER_WRITE;   /* count the two memory accesses */
 
-                if (cntr_reg == CNTR_MAX)                       /* if the word count is now exhausted */
-                    if (order_reg & ORDER_DC)                   /*   then if the order is chained */
-                        inbound_signals = NO_SIGNALS;           /*     then all required signals have been sent */
-                    else                                        /*   otherwise */
-                        inbound_signals = TOGGLESR | CHANSO;    /*     toggle the channel SR flip-flop */
+                if (cntr_reg == CNTR_MAX)                               /* if the word count is now exhausted */
+                    if (order_reg & ORDER_DC)                           /*   then if the order is chained */
+                        inbound_signals = NO_SIGNALS;                   /*     then all required signals have been sent */
+                    else                                                /*   otherwise */
+                        inbound_signals = ACKSR | TOGGLESR | CHANSO;    /*     toggle the channel SR flip-flop */
 
-                else {                                          /* otherwise the transfer is incomplete */
-                    inbound_signals = EOT | TOGGLESR | CHANSO;  /*   so assert EOT and toggle the channel SR flip-flop */
+                else {                                                  /* otherwise the transfer is incomplete */
+                    inbound_signals = ACKSR | EOT | TOGGLESR | CHANSO;  /*   so assert EOT and toggle the channel SR FF */
 
                     if (! (order_reg & ORDER_DC)) {             /* if the order is not chained */
                         aux_reg &= ~AUX_IB;                     /*   then clear the in-block bit in RAM */
@@ -1477,7 +1510,7 @@ while (cycles > 0) {                                    /* execute as long as cy
 
             else {                                                              /* otherwise the transfer succeeded */
                 if (sio_order == sioREAD || sio_order == sioREADC)              /* if this is a Read or Read Chained order */
-                    if (cpu_write_memory (dma_iop,                              /*   then write the word to memory */
+                    if (iop_write_memory (dma,                                  /*   then write the word to memory */
                                           TO_PA (AUX_BANK (aux_reg), addr_reg), /*     at the indicated bank and offset */
                                           IODATA (outbound)))                   /* if the write succeeds */
                         cycles = cycles - CYCLES_PER_WRITE;                     /*   then count the memory access */
@@ -1521,7 +1554,7 @@ while (cycles > 0) {                                    /* execute as long as cy
 
         priority_mask = 0;                              /* request SR priority recalculation */
 
-        dprintf (mpx_dev, DEB_SR, "Device number %d denied SR%d\n",
+        dprintf (mpx_dev, DEB_SR, "Device number %u denied SR%u\n",
                  dibptr->device_number, dibptr->service_request_number);
         }
 
@@ -1603,13 +1636,13 @@ return;
        selected registers are enabled to the active-low IOD bus).
 */
 
-static SIGNALS_DATA mpx_interface (DIB *dibptr, INBOUND_SET inbound_signals, uint16 inbound_value)
+static SIGNALS_DATA mpx_interface (DIB *dibptr, INBOUND_SET inbound_signals, HP_WORD inbound_value)
 {
 uint32         address;
 SIO_ORDER      sio_order;
 INBOUND_SIGNAL signal;
 INBOUND_SET    working_set      = inbound_signals;
-uint16         outbound_value   = 0;
+HP_WORD        outbound_value   = 0;
 OUTBOUND_SET   outbound_signals = NO_SIGNALS;
 
 dprintf (mpx_dev, DEB_IOB, "Received data %06o with signals %s\n",
@@ -1658,7 +1691,7 @@ while (working_set) {
             if (state_reg == State_B)                   /* if the current state is State B */
                 rollover = CLEAR;                       /*   then clear the word count rollover flip-flop */
 
-            dprintf (mpx_dev, DEB_CSRW, "RAM [%d] stored address %06o | %s | "
+            dprintf (mpx_dev, DEB_CSRW, "RAM [%u] stored address %06o | %s | "
                                         "counter %04o | %s | %sbank %02o\n",
                      address, addr_ram [address], sio_order_name [sio_order],
                      cntr_ram [address], state_name [state_ram [address]],
@@ -1679,7 +1712,7 @@ while (working_set) {
 
                 sio_order = RD_SIO_ORDER (order_reg, cntr_reg); /* get the current SIO order */
 
-                dprintf (mpx_dev, DEB_CSRW, "RAM [%d] loaded address %06o | %s | "
+                dprintf (mpx_dev, DEB_CSRW, "RAM [%u] loaded address %06o | %s | "
                                             "counter %04o | %s | %sbank %02o\n",
                          address, addr_reg, sio_order_name [sio_order],
                          cntr_reg, state_name [state_reg],
@@ -1718,7 +1751,7 @@ while (working_set) {
                 dprintf (mpx_dev, DEB_CSRW, "Order register value %02o (%s) "
                                             "and counter register value %d returned\n",
                          order_reg & ORDER_MASK, sio_order_name [IOCW_ORDER (outbound_value)],
-                         IOCW_COUNT (outbound_value));
+                         SEXT16 (IOCW_COUNT (outbound_value)));
                 }
 
             if (control_word & CN_ADDR_RAM) {               /* if the address register is selected */
@@ -1755,7 +1788,7 @@ while (working_set) {
             outbound_value = ST_DIO_OK | status_word;   /* get the last state parity error, if any */
 
             dprintf (mpx_dev, DEB_CSRW, (status_word & ST_STATE_PARITY)
-                                           ? "Status is %sRAM address %d\n"
+                                           ? "Status is %sRAM address %u\n"
                                            : "Status is DIO OK\n",
                      fmt_bitset (outbound_value, status_format),
                      ST_TO_RAM_ADDR (outbound_value));
@@ -1768,7 +1801,7 @@ while (working_set) {
             if (control_word & CN_MR)                   /* if a master reset is indicated */
                 mpx_reset (&mpx_dev);                   /*   then perform an IORESET */
 
-            dprintf (mpx_dev, DEB_CSRW, "Control is %sRAM address %d\n",
+            dprintf (mpx_dev, DEB_CSRW, "Control is %sRAM address %u\n",
                      fmt_bitset (inbound_value, control_format),
                      CN_RAM_ADDR (control_word));
             break;
@@ -1911,7 +1944,7 @@ static void end_channel (DIB *dibptr)
 active_count = active_count - 1;                        /* decrease the reference count */
 mpx_is_idle = (active_count == 0);                      /*   and idle the channel if no more work */
 
-dprintf (mpx_dev, DEB_CSRW, "Channel SR %d program ended\n",
+dprintf (mpx_dev, DEB_CSRW, "Channel SR %u program ended\n",
          dibptr->service_request_number);
 
 return;
@@ -1926,11 +1959,11 @@ return;
    internal logic in response.
 */
 
-static SIGNALS_DATA abort_channel (DIB *dibptr, char *reason)
+static SIGNALS_DATA abort_channel (DIB *dibptr, const char *reason)
 {
 SIGNALS_DATA outbound;
 
-dprintf (mpx_dev, DEB_CSRW, "Channel SR %d asserted XFERERROR for %s\n",
+dprintf (mpx_dev, DEB_CSRW, "Channel SR %u asserted XFERERROR for %s\n",
          dibptr->service_request_number, reason);
 
 outbound = dibptr->io_interface (dibptr, XFERERROR | CHANSO, 0);    /* tell the device that the channel has aborted */

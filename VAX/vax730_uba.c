@@ -93,8 +93,6 @@ uint32 uba_fmer = 0;                                    /* failing map reg */
 uint32 uba_map[UBA_NMAPR] = { 0 };                      /* map registers */
 int32 autcon_enb = 1;                                   /* autoconfig enable */
 
-extern int32 autcon_enb;
-
 t_stat uba_reset (DEVICE *dptr);
 const char *uba_description (DEVICE *dptr);
 t_stat uba_ex (t_value *vptr, t_addr exta, UNIT *uptr, int32 sw);
@@ -119,6 +117,7 @@ extern t_stat rb_wr32 (int32 data, int32 PA, int32 access);
 
 t_stat (*iodispR[IOPAGESIZE >> 1])(int32 *dat, int32 ad, int32 md);
 t_stat (*iodispW[IOPAGESIZE >> 1])(int32 dat, int32 ad, int32 md);
+DIB *iodibp[IOPAGESIZE >> 1];
 
 /* Unibus interrupt request to interrupt action map */
 

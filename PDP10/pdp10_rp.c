@@ -1,6 +1,6 @@
 /* pdp10_rp.c - RH11/RP04/05/06/07 RM02/03/05/80 "Massbus" disk controller
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    rp           RH/RP/RM moving head disks
 
+   13-Mar-17    RMS     Annotated fall through in switch
    12-Nov-05    RMS     Fixed DCLR not to clear drive address
    07-Jul-05    RMS     Removed extraneous externs
    18-Mar-05    RMS     Added attached test to detach routine
@@ -45,7 +46,7 @@
    28-Sep-01    RMS     Fixed interrupt handling for SC/ATA
    23-Aug-01    RMS     Added read/write header stubs for ITS
                         (found by Mirian Crzig Lennox) 
-   13-Jul-01    RMS     Changed fread call to fxread (found by Peter Schorn)
+   13-Jul-01    RMS     Changed fread call to fxread (Peter Schorn)
    14-May-01    RMS     Added check for unattached drive
 
    The "Massbus style" disks consisted of several different large
@@ -70,14 +71,13 @@
 
 #include "pdp10_defs.h"
 #include <math.h>
-#include <assert.h>
 
 #define RP_NUMDR        8                               /* #drives */
 #define RP_NUMWD        128                             /* 36b words/sector */
 #define RP_MAXFR        32768                           /* max transfer */
 #define SPINUP_DLY      (1000*1000)                     /* Spinup delay, usec */
 #define GET_SECTOR(x,d) ((int) fmod (sim_gtime() / ((double) (x)), \
-                    ((double) drv_tab[d].sect)))
+                        ((double) drv_tab[d].sect)))
 #define MBA_RP_CTRL     0                               /* RP drive */
 #define MBA_RM_CTRL     1                               /* RM drive */
 
@@ -242,7 +242,7 @@
 #define GET_DA(c,fs,d)  ((((GET_CY (c) * drv_tab[d].surf) + \
                         GET_SF (fs)) * drv_tab[d].sect) + GET_SC (fs))
 
-/* RPCC - 176736 - current cylinder */
+/* RPCC -  176736 - current cylinder */
 /* RPER2 - 176740 - error status 2 - drive unsafe conditions */
 /* RPER3 - 176742 - error status 3 - more unsafe conditions */
 /* RPEC1 - 176744 - ECC status 1 - unimplemented */
@@ -330,11 +330,8 @@ struct drvtyp drv_tab[] = {
     { 0 }
     };
 
-extern d10 *M;                                          /* memory */
-extern int32 int_req;
 extern int32 ubmap[UBANUM][UMAP_MEMSIZE];               /* Unibus maps */
 extern int32 ubcs[UBANUM];
-extern UNIT cpu_unit;
 extern uint32 fe_bootrh;
 extern int32 fe_bootunit;
 
@@ -936,6 +933,7 @@ switch (uptr->FUNC) {                                   /* case on function */
             update_rpcs (CS1_DONE | CS1_TRE, drv);      /* set done, err */
             break;
             }
+        /* fall through */
     case FNC_WCHK:                                      /* write check */
     case FNC_READ:                                      /* read */
     case FNC_READH:                                     /* read headers */
@@ -1028,6 +1026,7 @@ switch (uptr->FUNC) {                                   /* case on function */
             clearerr (uptr->fileref);
             return SCPE_IOERR;
             }
+        /* fall through */
 
     case FNC_WRITEH:                                    /* write headers stub */
         update_rpcs (CS1_DONE, drv);                    /* set done */
@@ -1367,7 +1366,7 @@ if (!(uptr->flags & UNIT_ATT))
 M[FE_RHBASE] = fe_bootrh = rp_dib.ba;
 M[FE_UNIT] = fe_bootunit = unitno;
 
-assert (sizeof(boot_rom_dec) == sizeof(boot_rom_its));
+ASSURE (sizeof(boot_rom_dec) == sizeof(boot_rom_its));
 
 M[FE_KEEPA] = (M[FE_KEEPA] & ~INT64_C(0xFF)) | ((sim_switches & SWMASK ('A'))? 010 : 0);
 

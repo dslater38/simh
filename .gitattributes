@@ -7,5 +7,8 @@
 *.bin binary
 *.imd binary
 *.rim binary
+*.tap binary
+*.dsk binary
+*.vhd binary
 sim_rev.h export-subst
 
